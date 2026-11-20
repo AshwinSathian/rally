@@ -30,12 +30,12 @@ const saved: Saved = { level: 1, sound: true, best: 0, record: [[0, 0], [0, 0], 
 // Take each stored field only if it has the right shape, so a damaged or hand-edited value
 // falls back to its default instead of breaking the game.
 try {
-  const old = localStorage.getItem('rally:v1');
-  const raw = JSON.parse(localStorage.getItem(KEY) ?? old ?? '{}') as Partial<Record<keyof Saved, unknown>>;
+  const read = (k: string) => { try { return JSON.parse(localStorage.getItem(k) ?? 'null') as Partial<Record<keyof Saved, unknown>> | null; } catch { return null; } };
+  const v2 = read(KEY), raw = v2 ?? read('rally:v1') ?? {};
   const count = (n: unknown) => Number.isInteger(n) && (n as number) >= 0;
   if (Number.isInteger(raw.level) && (raw.level as number) in LEVELS) saved.level = raw.level as number;
   if (typeof raw.sound === 'boolean') saved.sound = raw.sound;
-  if (localStorage.getItem(KEY) && count(raw.best)) saved.best = raw.best as number;
+  if (v2 && count(raw.best)) saved.best = raw.best as number;
   if (Array.isArray(raw.record) && raw.record.length === 3 && raw.record.every((r) => Array.isArray(r) && r.length === 2 && r.every(count))) saved.record = raw.record as [number, number][];
 } catch { /* first visit, bad JSON or storage blocked */ }
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch { /* private mode: play on */ } };
@@ -114,6 +114,7 @@ function attract() {
 function start(m: Mode) {
   mode = m;
   document.body.dataset.mode = m;
+  canvas.setAttribute('aria-label', m === 'solo' ? 'Your bat and the ball' : 'Table tennis table');
   s = create();
   j = J.create((Math.random() * 1e9) | 0);
   bots = [];
@@ -203,9 +204,10 @@ function onMove(e: PointerEvent) {
 canvas.addEventListener('pointerdown', (e) => {
   sfx.unlock();
   if (screen !== 'play') return;
-  // Solo: a click, or a second finger while one steers, flicks the wrist. Pressing is the
-  // moment that matters, so it acts on the way down, not on release.
-  if (mode === 'solo' && (e.pointerType === 'mouse' || input.down)) { soloAction(); if (input.down) return; }
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  // Solo: every press flicks the wrist (or drops the ball to start): the first finger, a second
+  // finger while one steers, or a click. Timing is the skill, so it acts on the way down.
+  if (mode === 'solo') soloAction();
   if (input.down) return;
   canvas.setPointerCapture(e.pointerId);
   input.id = e.pointerId; input.down = true; input.touch = e.pointerType !== 'mouse';
@@ -219,11 +221,8 @@ canvas.addEventListener('pointerup', (e) => {
   if (!input.down || e.pointerId !== input.id) return;
   input.down = false;
   if (input.touch) input.id = -1;
-  // A tap: serves in a match; in Solo (touch only, the mouse acted on press) it flicks.
-  if (input.moved < 14 && e.timeStamp - input.downAt < 400) {
-    if (mode === 'match') playerServe();
-    else if (input.touch) soloAction();
-  }
+  // A tap serves in a match. (In Solo the press already acted.)
+  if (mode === 'match' && input.moved < 14 && e.timeStamp - input.downAt < 400) playerServe();
 });
 canvas.addEventListener('pointercancel', (e) => { if (e.pointerId === input.id) { input.down = false; input.id = -1; } });
 
@@ -237,7 +236,14 @@ function playerServe() {
 // Solo's one button: drops the ball to start, then flicks the wrist.
 function soloAction() {
   if (screen !== 'play' || replay || pendingEnd || !j.live) return;
-  J.flick(j);
+  // A flick just after the ball left the bat still counts for that bounce.
+  const extra = J.flick(j);
+  if (extra) {
+    sfx.paddle(7, j.bat.x / J.REACH.x * 0.5, true);
+    pops.push({ x: j.bat.x, y: j.bat.y, z: j.bat.z, age: 0, life: 0.7, text: `+${extra}`, gold: true, ring: false });
+    call('High ball, double points', true);
+    hud();
+  }
 }
 
 const KEYMAP: Record<string, [number, number]> = {
@@ -384,7 +390,7 @@ function handleSolo(e: J.JEvent) {
     navigator.vibrate?.(e.high ? 16 : 6);
     pops.push({ x: e.x, y: e.y, z: j.bat.z, age: 0, life: 0.7, text: `+${e.gain}`, gold: e.clean || e.high, ring: true });
     // Each step up in the multiplier gets a chime and a call.
-    if (e.clean && e.mult > 1 && j.streak % 5 === 0) { sfx.patch(pan); call(`Clean streak ×${e.mult}`, true); }
+    if (e.clean && J.multiplier(j.streak - 1) < e.mult) { sfx.patch(pan); call(`Clean streak ×${e.mult}`, true); }
     else if (e.high) call('High ball, double points', true);
     hud();
   } else if (e.t === 'drop') {
@@ -432,7 +438,7 @@ function replayFrame(at: number): Snap | undefined {
 }
 
 function draw(f: Snap, t: number) {
-  if ('bat' in f) drawHand(g, cam, base, f, replay ? [] : pops, j.streak);
+  if ('bat' in f) drawHand(g, cam, base, f, replay ? [] : pops, j.streak, reduced.matches);
   else drawFrame(g, cam, base, net!, f, replay ? [] : fx);
   void t;
 }
@@ -495,14 +501,20 @@ function frame(now: number) {
 }
 
 let promptText = '';
+let taught = false;
 function prompt() {
   let text = '';
   if (screen === 'play' && !replay && !pendingEnd) {
     if (mode === 'solo' && j.held) text = coarse.matches ? 'Tap to drop the ball' : 'Click or press Space to drop the ball';
+    // The first game of a visit also says how to move, until the ball has bounced a few times.
+    else if (mode === 'solo' && !taught && j.live) {
+      if (j.bounces < 4) text = coarse.matches ? 'Drag to keep the bat under the ball' : 'Move the mouse to keep the bat under the ball';
+      else taught = true;
+    }
     else if (mode === 'match' && !s.live && between <= 0 && s.server === 0) text = coarse.matches ? 'Tap to serve' : 'Click or press Space to serve';
   }
   if (text === promptText) return;
-  if (text) { el.prompt.textContent = text; el.live.textContent = mode === 'solo' ? 'Ready' : 'Your serve'; }
+  if (text) { el.prompt.textContent = text; el.live.textContent = text; }
   el.prompt.classList.toggle('on', !!text);
   promptText = text;
 }
@@ -576,6 +588,7 @@ function showOver() {
 
 function menu() {
   attract();
+  canvas.setAttribute('aria-label', 'Table tennis table');
   setScreen('home');
   hud(true);
   sfx.wake();

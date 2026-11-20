@@ -76,7 +76,9 @@ export function project(c: Cam, x: number, y: number, z: number) {
 export function unproject(c: Cam, sx: number, sy: number, planeZ = PAD_Z) {
   const a = (sx - c.cx) / c.F, b = -(sy - c.cy) / c.F;
   const d = { x: c.f.x + c.r.x * a + c.u.x * b, y: c.f.y + c.r.y * a + c.u.y * b, z: c.f.z + c.r.z * a + c.u.z * b };
-  const t = (planeZ - c.eye.z) / d.z;
+  // A point at or above the horizon has no ground point in front of the camera; treat it as a
+  // point just below the horizon, far away, so the paddle goes to the far edge of its reach.
+  const t = (planeZ - c.eye.z) / Math.min(d.z, -1e-3);
   return { x: c.eye.x + d.x * t, y: c.eye.y + d.y * t };
 }
 

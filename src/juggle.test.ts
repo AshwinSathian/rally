@@ -105,3 +105,18 @@ test('the same seed and the same hand give the same game', () => {
   const run = () => { const j = create(42); release(j); play(j, 240 * 20); return JSON.stringify(j); };
   assert.equal(run(), run());
 });
+
+test('a flick just after the contact still makes that bounce a high ball, once', () => {
+  const j = create(13);
+  release(j);
+  const ev: JEvent[] = [];
+  for (let i = 0; i < 240 * 3 && !ev.length; i++) { moveBat(j, j.ball.x, j.ball.y); step(j, ev); }
+  const before = j.points;
+  for (let i = 0; i < 6; i++) { moveBat(j, j.bat.x, j.bat.y); step(j, []); } // 25 ms late
+  const extra = flick(j);
+  assert.ok(extra > 0 && j.points === before + extra && j.highs === 1);
+  assert.equal(flick(j), 0, 'no second upgrade');
+  let peak = 0;
+  for (let i = 0; i < 240 && j.ball.vz > -0.5; i++) { moveBat(j, j.ball.x, j.ball.y); step(j, []); peak = Math.max(peak, j.ball.z); }
+  assert.ok(peak > 0.65, `peak ${peak}`);
+});

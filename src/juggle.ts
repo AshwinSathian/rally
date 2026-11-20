@@ -16,14 +16,17 @@ const APEX_HIGH = 0.75; // and a flicked one this far
 const RESTITUTION = 0.82;
 const TILT = 0.18; // sideways push per unit of upward speed at the very edge of the face
 const DRAG = 0.9995; // per tick, sideways only
-const FLICK_T = 0.16; // seconds for the wrist to go up and back
+const FLICK_T = 0.2; // seconds for the wrist to go up and back
 const FLICK_A = 0.06; // and how far up it goes
 const CLEAN = 0.35; // a contact inside this fraction of the radius is a clean hit
+const GRACE = 0.06; // a flick this soon after a contact still counts for that bounce
 
 export interface Juggle {
   ball: { x: number; y: number; z: number; vx: number; vy: number; vz: number };
   bat: { x: number; y: number; z: number; px: number; py: number; pz: number; vx: number; vy: number };
   flick: number; // seconds since the flick started, or -1
+  sinceHit: number; // seconds since the last contact
+  last: { gain: number; high: boolean; edge: boolean } | null; // the last contact, for a late flick
   held: boolean; // the ball hasn't been dropped yet
   live: boolean; // in play: false once it falls past the bat
   bounces: number;
@@ -44,7 +47,7 @@ export function create(seed = 1): Juggle {
   const j: Juggle = {
     ball: { x: 0, y: 0, z: HOLD_Z, vx: 0, vy: 0, vz: 0 },
     bat: { x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0, vx: 0, vy: 0 },
-    flick: -1, held: true, live: true, bounces: 0, points: 0, streak: 0, bestStreak: 0, cleans: 0, highs: 0, seed,
+    flick: -1, sinceHit: 99, last: null, held: true, live: true, bounces: 0, points: 0, streak: 0, bestStreak: 0, cleans: 0, highs: 0, seed,
   };
   return j;
 }
@@ -71,10 +74,20 @@ export function release(j: Juggle) {
 }
 
 // A flick of the wrist: the bat rises a few centimetres and comes back. Meet the ball on the way
-// up and it goes high.
-export function flick(j: Juggle) {
-  if (j.held) { release(j); return; }
-  if (j.flick < 0 && j.live) j.flick = 0;
+// up and it goes high. A flick a moment too late, just after the ball has left the bat, still
+// counts for that bounce: returns the extra points it earned, or 0.
+export function flick(j: Juggle): number {
+  if (j.held) { release(j); return 0; }
+  if (!j.live) return 0;
+  if (j.sinceHit <= GRACE && j.last && !j.last.high && !j.last.edge && j.ball.vz > 0) {
+    j.ball.vz = Math.sqrt(2 * gravity(j.bounces) * APEX_HIGH) - gravity(j.bounces) * j.sinceHit;
+    j.last.high = true;
+    j.highs++;
+    j.points += j.last.gain;
+    return j.last.gain;
+  }
+  if (j.flick < 0) j.flick = 0;
+  return 0;
 }
 
 const flickZ = (t: number) => (t < 0 || t > FLICK_T ? 0 : FLICK_A * Math.sin((Math.PI * t) / FLICK_T));
@@ -97,6 +110,7 @@ export function step(j: Juggle, out: JEvent[]) {
   const ball = j.ball, bat = j.bat;
   if (j.held) { ball.x = bat.x; ball.y = bat.y; ball.z = bat.z + HOLD_Z; return; }
   const g = gravity(j.bounces);
+  j.sinceHit += TICK;
   const x0 = ball.x, y0 = ball.y, z0 = ball.z;
   ball.vz -= g * TICK;
   ball.vx *= DRAG; ball.vy *= DRAG;
@@ -107,7 +121,10 @@ export function step(j: Juggle, out: JEvent[]) {
     // the gap closes linearly, so the moment it reaches zero is exact.
     const gap0 = z0 - BALL_R - bat.pz, gap1 = ball.z - BALL_R - bat.z;
     const falling = ball.vz - (bat.z - bat.pz) / TICK < 0;
-    if (falling && gap1 <= 0 && gap0 >= -BALL_R) {
+    // A ball already a little below the face only counts if it was over the face, so a bat
+    // can't scoop up a ball that has fallen past its side.
+    const wasOver = Math.hypot(x0 - bat.px, y0 - bat.py) <= BAT_R + RIM;
+    if (falling && gap1 <= 0 && (gap0 >= 0 || (gap0 >= -BALL_R && wasOver))) {
       const f = gap0 <= 0 ? 0 : gap0 / (gap0 - gap1);
       const cx = x0 + (ball.x - x0) * f, cy = y0 + (ball.y - y0) * f;
       const bx = bat.px + (bat.x - bat.px) * f, by = bat.py + (bat.y - bat.py) * f, bz = bat.pz + (bat.z - bat.pz) * f;
@@ -140,7 +157,7 @@ function hit(j: Juggle, cx: number, cy: number, cz: number, dx: number, dy: numb
   const batVz = j.flick >= 0 ? (FLICK_A * Math.PI / FLICK_T) * Math.cos((Math.PI * j.flick) / FLICK_T) : 0;
   const vin = batVz - ball.vz; // closing speed
   const edge = d > BAT_R;
-  const high = !edge && batVz > 0.3;
+  const high = !edge && batVz > 0.15;
   const vBase = Math.sqrt(2 * g * APEX);
   let vz: number;
   if (edge) vz = vin * 0.45; // the wooden rim: a dead, low bounce
@@ -169,11 +186,13 @@ function hit(j: Juggle, cx: number, cy: number, cz: number, dx: number, dy: numb
   const gain = mult * (high ? 2 : 1);
   j.bounces++;
   j.points += gain;
+  j.sinceHit = 0;
+  j.last = { gain, high, edge };
   out.push({ t: 'hit', x: cx, y: cy, speed: vin, clean, edge, high, mult, gain });
 }
 
 // Where the ball will next come down to the bat's resting height, and how long until it does.
-// Used by the autoplay bot and by the drawing of the bat's shadow cue.
+// Used by the autoplay bot.
 export function landing(j: Juggle) {
   const b = j.ball, g = gravity(j.bounces);
   const h = b.z - BALL_R;

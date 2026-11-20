@@ -65,10 +65,15 @@ body[data-screen=home] .hud { opacity: 0; transform: translateY(-8px); visibilit
 .solo-score .mult:empty { display: none; }
 body[data-mode=solo] .board { display: none; }
 body[data-mode=solo] .solo-score { display: flex; }
-/* Landscape Solo: the court takes the full height, so the score moves to the left side. */
+/* Landscape Solo: the score moves to the left side, out of the ball's way. */
 @media (orientation: landscape) {
   body[data-mode=solo] .solo-score { position: absolute; left: calc(var(--safe-l) + 22px); top: calc(var(--safe-t) + 14px); align-items: flex-start; }
+  body[data-mode=solo] .call { left: calc(var(--safe-l) + 22px); top: calc(var(--safe-t) + 112px); transform: none; }
+  body[data-mode=solo] .call.on { transform: none; }
 }
+/* Solo's calls sit below the score and multiplier, and good news is gold, not the red of a miss. */
+body[data-mode=solo] .call { top: calc(var(--safe-t) + 124px); white-space: nowrap; }
+body[data-mode=solo] .call.mine { color: #FFC24D; }
 
 .icon-btn {
   position: absolute; right: calc(var(--safe-r) + 12px); top: calc(var(--safe-t) + 10px);
@@ -145,6 +150,7 @@ body:not([data-screen=home]) .home { opacity: 0; visibility: hidden; transition:
 .how summary::after { content: " +" / ""; color: var(--ink-3); }
 .how[open] summary::after { content: " −" / ""; }
 .how ul { margin: 0 0 6px; padding-left: 18px; display: grid; gap: 6px; }
+.how h3 { margin: 6px 0 4px; font-size: 0.8125rem; font-weight: 700; color: var(--ink); text-transform: uppercase; letter-spacing: .06em; }
 .how { -webkit-user-select: text; user-select: text; }
 .mouse-only { display: none; }
 @media (hover: hover) and (pointer: fine) { .mouse-only { display: inline; } .touch-only { display: none; } }
