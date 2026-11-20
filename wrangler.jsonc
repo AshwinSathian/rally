@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rally",
+  // Personal account. The login can see more than one account, so pin it.
+  "account_id": "5e8cabf1f94e15e681dfe58d4164a8ed",
+  "compatibility_date": "2026-11-01",
+  // No Worker code: every request is a static file served from the edge.
+  "assets": { "directory": "./dist", "not_found_handling": "single-page-application" },
+  "workers_dev": true,
+  "routes": [{ "pattern": "rally.ashwinsathian.com", "custom_domain": true }]
+}

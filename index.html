@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rally</title>
+<meta name="description" content="Table tennis in the browser. A solo game against the wall, or a match to eleven against a computer opponent at one of three levels.">
+<meta name="theme-color" content="#0B1220">
+<meta property="og:title" content="Rally">
+<meta property="og:description" content="Table tennis in the browser. A solo game against the wall, or a match to eleven against a computer opponent at one of three levels.">
+<meta property="og:image" content="https://rally.ashwinsathian.com/og.png">
+<meta property="og:url" content="https://rally.ashwinsathian.com/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body data-screen="home" data-mode="match">
+<canvas id="game" aria-label="Table tennis table" role="img"></canvas>
+
+<header class="hud">
+  <div class="board" role="group" aria-label="Score">
+    <span class="side you"><i class="serve" id="sv0"></i><span class="name">You</span><b id="s0">0</b></span>
+    <span class="side them"><b id="s1">0</b><span class="name" id="them">Club</span><i class="serve" id="sv1"></i></span>
+  </div>
+  <div class="solo-score"><b id="pts">0</b><span id="best-line"></span></div>
+  <button id="pause" class="icon-btn" aria-label="Pause"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 5v14M15.5 5v14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg></button>
+</header>
+
+<p id="call" class="call" aria-hidden="true"></p>
+<p id="prompt" class="prompt" aria-hidden="true"></p>
+<p id="live" class="sr" aria-live="polite"></p>
+
+<section id="home" class="home" aria-labelledby="wordmark">
+  <div class="panel">
+    <h1 id="wordmark" class="wordmark">Rally</h1>
+    <p class="lede">Table tennis you play with one finger or a mouse.</p>
+    <div class="card" role="group" aria-labelledby="match-h">
+      <div class="mode-head">
+        <h2 id="match-h" class="mode-name">Match</h2>
+        <p class="mode-desc">First to 11 against the computer. Pick who you play.</p>
+      </div>
+      <div class="levels">
+        <button data-level="0"><span>Casual</span><small id="rec0"></small></button>
+        <button data-level="1"><span>Club</span><small id="rec1"></small></button>
+        <button data-level="2"><span>Pro</span><small id="rec2"></small></button>
+      </div>
+    </div>
+    <div class="card">
+      <button class="mode" id="go-solo">
+        <span class="mode-name">Solo</span>
+        <span class="mode-desc">Each return scores 1. Hit the lit patch on the wall for 3.</span>
+        <span class="mode-stat" id="solo-best"></span>
+      </button>
+    </div>
+    <details class="how">
+      <summary>How to play</summary>
+      <ul>
+        <li><span class="touch-only">Drag anywhere on the screen</span><span class="mouse-only">Move the mouse</span> to move your paddle, and <span class="touch-only">tap</span><span class="mouse-only">click</span> to serve. Arrow keys and Space work too.</li>
+        <li>Where the ball meets your paddle decides where it lands. The middle sends it to the middle, and the very tip sends it off the side.</li>
+        <li>Push forward as you hit for pace. Move sideways as you hit and the ball curves.</li>
+        <li>In a match the ball has to land on the table. Serve changes every two points, and every point from 10–10.</li>
+      </ul>
+    </details>
+    <div class="prefs">
+      <label class="toggle"><input type="checkbox" id="sound" checked><span>Sound</span></label>
+      <a href="https://github.com/AshwinSathian/rally" class="src">Source</a>
+    </div>
+  </div>
+</section>
+
+<dialog id="paused" aria-labelledby="paused-h">
+  <h2 id="paused-h">Paused</h2>
+  <div class="row">
+    <button data-act="resume" class="primary" autofocus>Resume</button>
+    <button data-act="restart">Restart</button>
+    <button data-act="menu">Menu</button>
+  </div>
+</dialog>
+
+<dialog id="over" aria-labelledby="over-h">
+  <p class="kicker" id="over-k"></p>
+  <h2 id="over-h"></h2>
+  <dl class="stats" id="over-stats"></dl>
+  <div class="row">
+    <button data-act="again" class="primary" autofocus>Play again</button>
+    <button data-act="menu">Menu</button>
+  </div>
+</dialog>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+/*.png
+  Cache-Control: public, max-age=604800
+/sw.js
+  Cache-Control: no-cache
+/
+  Cache-Control: no-cache
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()

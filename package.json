@@ -1,0 +1,28 @@
+{
+  "name": "rally",
+  "version": "1.0.0",
+  "description": "Table tennis in the browser: a solo wall mode and matches against a bot that reads the ball the way a person does.",
+  "homepage": "https://rally.ashwinsathian.com",
+  "repository": { "type": "git", "url": "git+https://github.com/AshwinSathian/rally.git" },
+  "license": "MIT",
+  "author": "Ashwin Sathian",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "node --test src/*.test.ts",
+    "bench": "node scripts/bench.ts",
+    "preview": "vite preview",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "playwright": "^1.65.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vite-plugin-singlefile": "^2.3.4",
+    "wrangler": "^4.165.0"
+  }
+}
