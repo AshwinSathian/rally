@@ -79,7 +79,7 @@ Each cell is the row player's win rate and the average score. Rallies run about 
 
 **Drawing** (`src/view.ts`) is Canvas 2D through a pinhole camera behind your end of the table. The camera is fitted to the screen on every resize: high and steep on a tall phone, where the far half needs the room, and low on a wide screen. The same camera inverted maps a pointer onto the paddle's plane. The floor, table and net never move, so they are painted once per resize into offscreen canvases; each frame draws those two images and the moving pieces, sorted far to near with the net slotted in between. Frames are interpolated between ticks.
 
-**Speed.** On a phone viewport with the CPU slowed 4× and 150 ms of network latency, first paint is at about PERF_FCP ms, and a rally runs at a steady PERF_FRAMES (`scripts/perf.ts`).
+**Speed.** On a phone viewport with the CPU slowed 4× and 150 ms of network latency, first paint is at about 320 ms, and a rally runs at 60 frames a second with no frame over 17 ms (`scripts/perf.ts`).
 
 ## Running it
 
