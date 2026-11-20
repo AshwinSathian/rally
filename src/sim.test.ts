@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { aimFor, create, landX, movePad, nextPoint, serve, serverFor, step, sweep, winner, HALF_L, HALF_W, BALL_R, CONTACT, PAD_HALF, PAD_R, SOLO_FLOOR, type Event, type State } from './sim.ts';
+import { aimFor, create, landX, movePad, nextPoint, serve, serverFor, step, sweep, winner, HALF_L, HALF_W, BALL_R, PAD_HALF, PAD_R, type Event } from './sim.ts';
 import { Bot, LEVELS, predict } from './ai.ts';
 
 // Reference for sweep(): walk the step in a million tiny pieces and report the first overlap.
@@ -38,7 +38,7 @@ test('a ball never passes through a paddle, however fast both move', () => {
   let seed = 11, touched = 0;
   const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
   for (let k = 0; k < 20000; k++) {
-    const s = create('match', 1);
+    const s = create();
     s.live = true;
     const p = s.pads[0];
     p.x = (rnd() - 0.5) * 0.8; p.y = -HALF_L - 0.2;
@@ -69,7 +69,7 @@ test('scoring: eleven, win by two, serve every two and every one at deuce', () =
 });
 
 test('predict matches the simulation exactly, curve included', () => {
-  const s = create('match', 9);
+  const s = create();
   s.live = true;
   Object.assign(s.ball, { x: 0.1, y: -0.5, vx: 0.4, vy: 5, curve: 1.2, bounceY: 99, bounced: true });
   s.pads[1].y = s.pads[1].py = 50; // out of the way
@@ -82,7 +82,7 @@ test('predict matches the simulation exactly, curve included', () => {
 });
 
 function match(a: number, b: number, seed: number) {
-  const s = create('match', seed);
+  const s = create();
   const bots = [new Bot(0, LEVELS[a], seed * 3 + 1), new Bot(1, LEVELS[b], seed * 7 + 2)];
   const ev: Event[] = [];
   let rallies = 0, shots = 0, ticks = 0, sinceLive = 0;
@@ -112,25 +112,8 @@ test('bots finish matches, and better bots win', () => {
   assert.ok(clubWins >= 14, `Club beat Casual ${clubWins}/20`);
 });
 
-test('solo: the ball stays inside the walls', () => {
-  for (let k = 0; k < 200; k++) {
-    const s: State = create('solo', k + 5);
-    s.live = true;
-    const a = (k / 200) * Math.PI * 2;
-    Object.assign(s.ball, { x: 0, y: 0, vx: Math.cos(a) * 11, vy: Math.abs(Math.sin(a)) * 11 + 0.5, curve: (k % 5 - 2) * 0.8 });
-    s.pads[0].y = s.pads[0].py = -99; // no paddle: let it fall out
-    const ev: Event[] = [];
-    for (let i = 0; i < 240 * 10 && s.live; i++) {
-      step(s, ev);
-      assert.ok(Math.abs(s.ball.x) <= HALF_W - BALL_R + 1e-9, `escaped sideways ${k}`);
-      assert.ok(s.ball.y <= HALF_L - BALL_R + 1e-9, `escaped the far wall ${k}`);
-    }
-  }
-  assert.ok(PAD_HALF > 0 && PAD_R > 0);
-});
-
 test('a ball that lands wide is called wide even if a paddle touches it in the same tick', () => {
-  const s = create('match', 3);
+  const s = create();
   s.live = true; s.lastHit = 1;
   Object.assign(s.ball, { x: 0.85, y: -1.165, vx: 0, vy: -11, curve: 0, bounceY: -1.17, bounced: false });
   const p = s.pads[0];
@@ -150,45 +133,9 @@ test('aimFor inverts landX, and only the paddle tip goes wide', () => {
 });
 
 test('a flicked serve is no faster than a gentle one by more than the serve cap', () => {
-  const s = create('match', 4);
+  const s = create();
   s.pads[0].vy = 30; // a mouse flicked forward as fast as it goes
   serve(s);
   assert.ok(Math.hypot(s.ball.vx, s.ball.vy) <= 3.3 + 1.5 * 0.55 + 1e-9);
 });
 
-test('solo: the game ends the moment the ball touches the floor, not before', () => {
-  const s = create('solo', 6);
-  s.live = true;
-  s.pads[0].x = s.pads[0].px = 0.6; // out of the ball's way
-  Object.assign(s.ball, { x: -0.3, y: SOLO_FLOOR + 0.5, vx: 0, vy: -4, curve: 0 });
-  const ev: Event[] = [];
-  let lowest = Infinity;
-  while (s.live) { step(s, ev); lowest = Math.min(lowest, s.ball.y); }
-  assert.deepEqual(ev.map((e) => e.t), ['out']);
-  assert.ok(Math.abs(lowest - (SOLO_FLOOR + BALL_R)) < 1e-9);
-});
-
-test('solo: a wide court keeps the ball and the paddle inside its own walls', () => {
-  const s = create('solo', 8, 9); // asks for far too wide; the sim caps it
-  assert.equal(s.halfW, 1.4);
-  movePad(s, 0, 5, s.pads[0].y);
-  assert.ok(s.pads[0].x <= 1.4 - 0.05 + 1e-12);
-  s.live = true;
-  Object.assign(s.ball, { x: 0, y: 0, vx: 9, vy: 4, curve: 1.5 });
-  s.pads[0].y = s.pads[0].py = -99;
-  const ev: Event[] = [];
-  let maxX = 0;
-  for (let i = 0; i < 240 * 5 && s.live; i++) { step(s, ev); maxX = Math.max(maxX, Math.abs(s.ball.x)); }
-  assert.ok(maxX <= 1.4 - BALL_R + 1e-9 && maxX > 1.3, `max |x| ${maxX}`);
-});
-
-test('solo: a paddle stopped flush with the wall still returns a ball running down that wall', () => {
-  const s = create('solo', 9, 1.4);
-  s.live = true;
-  movePad(s, 0, 99, s.pads[0].y); movePad(s, 0, 99, s.pads[0].y);
-  assert.ok(Math.abs(s.pads[0].x + CONTACT - BALL_R - 1.4) < 1e-9, 'paddle edge flush with the wall');
-  Object.assign(s.ball, { x: 1.4 - BALL_R, y: s.pads[0].y + 0.3, vx: 0, vy: -5, curve: 0 });
-  const ev: Event[] = [];
-  for (let i = 0; i < 240 && !ev.length; i++) step(s, ev);
-  assert.equal(ev[0]?.t, 'hit');
-});

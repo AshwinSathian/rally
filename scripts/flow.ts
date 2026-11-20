@@ -46,7 +46,7 @@ ok(`match ends (${s.s.score.join('-')} in ${Math.round((Date.now() - t0) / 1000)
 ok('slow replay before the result', sawReplay);
 ok('result dialog', await page.locator('#over[open]').count() === 1);
 console.log('    ', await page.locator('#over-h').textContent(), '|', (await page.locator('#over-stats').textContent())?.replace(/\s+/g, ' '));
-const saved = JSON.parse(await page.evaluate(() => localStorage.getItem('rally:v1') ?? '{}'));
+const saved = JSON.parse(await page.evaluate(() => localStorage.getItem('rally:v2') ?? '{}'));
 ok('record saved', saved.record?.[0]?.[0] + saved.record?.[0]?.[1] === 1);
 const recordAfterOne = JSON.stringify(saved.record);
 await page.screenshot({ path: 'docs/shots/flow-over.png' });
@@ -65,7 +65,7 @@ if (sc[0] === 11) {
   await page.keyboard.press('Escape');
   await page.click('#paused [data-act=menu]');
   await page.waitForTimeout(6000);
-  ok('menu after match point records nothing', await page.locator('#over[open]').count() === 0 && JSON.stringify(JSON.parse(await page.evaluate(() => localStorage.getItem('rally:v1') ?? '{}')).record) === recordAfterOne);
+  ok('menu after match point records nothing', await page.locator('#over[open]').count() === 0 && JSON.stringify(JSON.parse(await page.evaluate(() => localStorage.getItem('rally:v2') ?? '{}')).record) === recordAfterOne);
 } else console.log('     (point went to the bot; skipped the match-point menu check)');
 await page.keyboard.press('Escape').catch(() => {});
 if ((await st()).screen !== 'home') { await page.click('#paused [data-act=menu]').catch(() => {}); }

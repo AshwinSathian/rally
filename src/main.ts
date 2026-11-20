@@ -1,9 +1,12 @@
 import './style.css';
-import { TICK, create, movePad, nextPoint, serve, winner, step, HALF_W, type Event, type Mode, type Side, type State } from './sim.ts';
+import { TICK, create, movePad, nextPoint, serve, winner, step, HALF_W, type Event, type Side, type State } from './sim.ts';
 import { Bot, LEVELS } from './ai.ts';
 import { camera, drawFrame, paintBase, paintNet, unproject, type Cam, type Frame, type Fx, type Layer } from './view.ts';
-import { courtFit, courtToWorld, courtWidthFor, drawCourt, paintCourt, type Court } from './court.ts';
+import * as J from './juggle.ts';
+import { drawHand, handCamera, handToWorld, paintRoom, type HandFrame, type Pop } from './hand.ts';
 import * as sfx from './audio.ts';
+
+type Mode = 'match' | 'solo';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>('game');
@@ -15,22 +18,24 @@ const TICK_MS = TICK * 1000;
 const TRAIL_MS = 120;
 const el = {
   prompt: $('prompt'), live: $('live'), call: $('call'), s0: $('s0'), s1: $('s1'), sv0: $('sv0'), sv1: $('sv1'),
-  pts: $('pts'), best: $('best-line'), paused: $<HTMLDialogElement>('paused'), over: $<HTMLDialogElement>('over'),
+  pts: $('pts'), best: $('best-line'), mult: $('mult'), paused: $<HTMLDialogElement>('paused'), over: $<HTMLDialogElement>('over'),
 };
 
 // --- saved data ------------------------------------------------------------------------------
 
 interface Saved { level: number; sound: boolean; best: number; record: [number, number][] }
-const KEY = 'rally:v1';
+// v2: Solo became a different game, so its best from v1 no longer means anything.
+const KEY = 'rally:v2';
 const saved: Saved = { level: 1, sound: true, best: 0, record: [[0, 0], [0, 0], [0, 0]] };
 // Take each stored field only if it has the right shape, so a damaged or hand-edited value
 // falls back to its default instead of breaking the game.
 try {
-  const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Record<keyof Saved, unknown>>;
+  const old = localStorage.getItem('rally:v1');
+  const raw = JSON.parse(localStorage.getItem(KEY) ?? old ?? '{}') as Partial<Record<keyof Saved, unknown>>;
   const count = (n: unknown) => Number.isInteger(n) && (n as number) >= 0;
   if (Number.isInteger(raw.level) && (raw.level as number) in LEVELS) saved.level = raw.level as number;
   if (typeof raw.sound === 'boolean') saved.sound = raw.sound;
-  if (count(raw.best)) saved.best = raw.best as number;
+  if (localStorage.getItem(KEY) && count(raw.best)) saved.best = raw.best as number;
   if (Array.isArray(raw.record) && raw.record.length === 3 && raw.record.every((r) => Array.isArray(r) && r.length === 2 && r.every(count))) saved.record = raw.record as [number, number][];
 } catch { /* first visit, bad JSON or storage blocked */ }
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch { /* private mode: play on */ } };
@@ -41,33 +46,35 @@ sfx.setSound(saved.sound);
 type Screen = 'home' | 'play' | 'paused' | 'over';
 let screen: Screen = 'home';
 let mode: Mode = 'match';
-let s: State = create('match', 1);
+let s: State = create(); // the table, for a match (and the menu's background rally)
+let j: J.Juggle = J.create(); // the bat in your hand, for Solo
 let bots: Bot[] = [];
 let firstServer: Side = 0;
 let games = 0;
-let between = 0; // seconds left in the pause after a point
+let between = 0; // seconds left in the pause after a point (or after a drop, in Solo)
 let pendingEnd = false;
-let stats = { longest: 0, patches: 0 };
+let stats = { longest: 0 };
 let stopUntil = 0; // hit-stop: the sim holds still for a few ms after a hard smash
 const fx: Fx[] = [];
+const pops: Pop[] = [];
 const trail: (Frame['ball'] & { t: number })[] = [];
-const history: { t: number; f: Frame }[] = []; // the last few seconds, for the slow replay
+type Snap = Frame | HandFrame;
+const history: { t: number; f: Snap }[] = []; // the last few seconds, for the slow replay
 let replay: { t0: number; t1: number; at: number } | null = null;
 
 // ?autoplay hands your paddle to a bot: for scripts/flow.ts and for watching. ?autoplay=0 is Casual.
 const auto = new URLSearchParams(location.search).get('autoplay');
-const autoplay = auto === null ? null : new Bot(0, LEVELS[auto !== '' && Number(auto) in LEVELS ? Number(auto) : 2], 99);
+const autoLevel = auto === null ? -1 : auto !== '' && Number(auto) in LEVELS ? Number(auto) : 2;
+const autoplay = autoLevel < 0 ? null : new Bot(0, LEVELS[autoLevel], 99);
 
-let cam: Cam; // the table, for a match
-let court: Court; // the court seen from above, for Solo
-let base: Layer, net: Layer | null;
+let cam: Cam;
+let base: Layer, net: Layer | null = null;
 let layoutKey = '';
 
-// Room kept clear at the top for the HUD. In Solo on a landscape screen the score sits to the
-// side of the court instead, so the court gets the full height.
-function hudTop(w: number, h: number, scr: Screen = screen, m: Mode = mode) {
-  if (scr === 'home') return 24;
-  if (m === 'solo') return w > h ? 16 : 92;
+// Room kept clear at the top for the HUD.
+function hudTop(w: number, h: number) {
+  if (screen === 'home') return 24;
+  if (mode === 'solo') return w > h ? 16 : 84;
   return 64;
 }
 
@@ -78,27 +85,26 @@ function layout() {
   // On wide screens the menu takes the left side, so the table moves over to make room.
   const left = screen === 'home' && w >= 900 && w >= h ? Math.min(520, w * 0.36) : 0;
   // Pausing and resuming change nothing here; only bake again when the picture would change.
-  const key = [w, h, dpr, mode, top, left, s.halfW].join();
+  const key = [w, h, dpr, mode, top, left].join();
   if (key === layoutKey) return;
   layoutKey = key;
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
   if (mode === 'solo') {
-    court = courtFit(w, h, dpr, top, s.halfW);
-    base = paintCourt(court, base);
-    net = null;
+    cam = handCamera(w, h, dpr, top);
+    base = paintRoom(cam, base);
   } else {
-    cam = camera(w, h, dpr, mode, top, left);
-    base = paintBase(cam, mode, base);
-    net = paintNet(cam, mode, net);
+    cam = camera(w, h, dpr, top, left);
+    base = paintBase(cam, base);
+    net = paintNet(cam, net);
   }
   // A finger that's down keeps the paddle where it is under the new camera.
   if (input.down && input.touch) setTouchOffset(input.lastX, input.lastY);
 }
 
-// The menu sits over a live game between two bots.
+// The menu sits over a live match between two bots.
 function attract() {
   mode = 'match';
-  s = create('match', (Math.random() * 1e9) | 0);
+  s = create();
   bots = [new Bot(0, LEVELS[2], 3), new Bot(1, LEVELS[1], 4)];
   document.body.dataset.mode = 'match';
   between = 0; replay = null; pendingEnd = false; history.length = 0; trail.length = 0;
@@ -108,17 +114,19 @@ function attract() {
 function start(m: Mode) {
   mode = m;
   document.body.dataset.mode = m;
-  // A Solo court is as wide as this screen suits, fixed for the game even if the window changes.
-  s = create(m, (Math.random() * 1e9) | 0, m === 'solo' ? courtWidthFor(innerWidth, innerHeight, hudTop(innerWidth, innerHeight, 'play', 'solo')) : undefined);
-  firstServer = m === 'solo' ? 0 : (games++ % 2) as Side;
-  s.server = firstServer;
+  s = create();
+  j = J.create((Math.random() * 1e9) | 0);
+  bots = [];
   if (m === 'match') {
+    firstServer = (games++ % 2) as Side;
+    s.server = firstServer;
+    nextPoint(s, firstServer);
     const L = LEVELS[saved.level];
     bots = [new Bot(1, L, (Math.random() * 1e9) | 0)];
     $('them').textContent = L.name;
-  } else bots = [];
-  stats = { longest: 0, patches: 0 };
-  between = 0; pendingEnd = false; replay = null; fx.length = 0; trail.length = 0; history.length = 0;
+  }
+  stats = { longest: 0 };
+  between = 0; pendingEnd = false; replay = null; fx.length = 0; pops.length = 0; trail.length = 0; history.length = 0;
   input.samples.length = 0; input.keys.clear(); input.usingKeys = false;
   syncPrev();
   setScreen('play');
@@ -146,18 +154,19 @@ function setScreen(next: Screen) {
 
 const input = {
   samples: [] as { t: number; x: number; y: number }[],
-  id: -1, // the one pointer that steers; a second finger is ignored
+  id: -1, // the one pointer that steers; in a match a second finger is ignored
   offX: 0, offY: 0, down: false, touch: false, downAt: 0, downX: 0, downY: 0, lastX: 0, lastY: 0, moved: 0,
   keys: new Set<string>(), kx: 0, ky: 0, usingKeys: false,
 };
 
-// Screen to world: onto the paddle's plane at the table, or straight down onto the court.
-const toWorld = (sx: number, sy: number) => (mode === 'solo' ? courtToWorld(court, sx, sy) : unproject(cam, sx, sy));
+// Screen to world: onto the paddle's plane at the table, or onto the bat's resting plane.
+const toWorld = (sx: number, sy: number) => (mode === 'solo' ? handToWorld(cam, sx, sy) : unproject(cam, sx, sy));
+const myPaddle = () => (mode === 'solo' ? j.bat : s.pads[0]);
 
 function setTouchOffset(sx: number, sy: number) {
   // Touch moves the paddle by however far the finger moves, so the finger never covers it.
-  const p = toWorld(sx, sy);
-  input.offX = s.pads[0].x - p.x; input.offY = s.pads[0].y - p.y;
+  const p = toWorld(sx, sy), me = myPaddle();
+  input.offX = me.x - p.x; input.offY = me.y - p.y;
   input.samples.length = 0;
 }
 
@@ -193,7 +202,11 @@ function onMove(e: PointerEvent) {
 
 canvas.addEventListener('pointerdown', (e) => {
   sfx.unlock();
-  if (screen !== 'play' || input.down) return;
+  if (screen !== 'play') return;
+  // Solo: a click, or a second finger while one steers, flicks the wrist. Pressing is the
+  // moment that matters, so it acts on the way down, not on release.
+  if (mode === 'solo' && (e.pointerType === 'mouse' || input.down)) { soloAction(); if (input.down) return; }
+  if (input.down) return;
   canvas.setPointerCapture(e.pointerId);
   input.id = e.pointerId; input.down = true; input.touch = e.pointerType !== 'mouse';
   input.downAt = e.timeStamp; input.downX = input.lastX = e.clientX; input.downY = input.lastY = e.clientY; input.moved = 0;
@@ -206,15 +219,25 @@ canvas.addEventListener('pointerup', (e) => {
   if (!input.down || e.pointerId !== input.id) return;
   input.down = false;
   if (input.touch) input.id = -1;
-  if (input.moved < 14 && e.timeStamp - input.downAt < 400) playerServe();
+  // A tap: serves in a match; in Solo (touch only, the mouse acted on press) it flicks.
+  if (input.moved < 14 && e.timeStamp - input.downAt < 400) {
+    if (mode === 'match') playerServe();
+    else if (input.touch) soloAction();
+  }
 });
 canvas.addEventListener('pointercancel', (e) => { if (e.pointerId === input.id) { input.down = false; input.id = -1; } });
 
 function playerServe() {
   if (screen !== 'play' || replay || pendingEnd || s.live || between > 0) return;
-  if (mode === 'match' && s.server !== 0) return;
+  if (s.server !== 0) return;
   serve(s, events);
   for (const e of events.splice(0)) handle(e, performance.now());
+}
+
+// Solo's one button: drops the ball to start, then flicks the wrist.
+function soloAction() {
+  if (screen !== 'play' || replay || pendingEnd || !j.live) return;
+  J.flick(j);
 }
 
 const KEYMAP: Record<string, [number, number]> = {
@@ -226,8 +249,8 @@ addEventListener('keydown', (e) => {
   sfx.unlock();
   const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   if (screen === 'play') {
-    if (k in KEYMAP) { input.keys.add(k); e.preventDefault(); if (!input.usingKeys) { input.usingKeys = true; input.kx = s.pads[0].x; input.ky = s.pads[0].y; } }
-    else if (k === ' ' || k === 'Enter') { e.preventDefault(); if (!e.repeat) playerServe(); }
+    if (k in KEYMAP) { input.keys.add(k); e.preventDefault(); if (!input.usingKeys) { input.usingKeys = true; const me = myPaddle(); input.kx = me.x; input.ky = me.y; } }
+    else if (k === ' ' || k === 'Enter') { e.preventDefault(); if (!e.repeat) { if (mode === 'solo') soloAction(); else playerServe(); } }
     else if ((k === 'Escape' || k === 'p') && !e.repeat) { e.preventDefault(); pause(); }
   } else if (screen === 'paused' && k === 'p' && !e.repeat) resume();
 });
@@ -237,8 +260,9 @@ function keyTarget() {
   let dx = 0, dy = 0;
   for (const k of input.keys) { dx += KEYMAP[k][0]; dy += KEYMAP[k][1]; }
   const l = Math.hypot(dx, dy) || 1;
-  input.kx += (dx / l) * 2.8 * TICK; input.ky += (dy / l) * 2.8 * TICK;
-  const p = s.pads[0];
+  const v = mode === 'solo' ? 1.2 : 2.8; // the bat in your hand moves over a smaller area
+  input.kx += (dx / l) * v * TICK; input.ky += (dy / l) * v * TICK;
+  const p = myPaddle();
   // Stay glued to the paddle so the target can't run off past the zone edge.
   input.kx = Math.max(p.x - 0.05, Math.min(p.x + 0.05, input.kx));
   input.ky = Math.max(p.y - 0.05, Math.min(p.y + 0.05, input.ky));
@@ -250,18 +274,22 @@ function keyTarget() {
 let simT = performance.now();
 let last = simT;
 const events: Event[] = [];
+const jev: J.JEvent[] = [];
 const prevBall = { x: 0, y: 0, z: 0 };
-const prevPads = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
+const prevPads = [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }];
 
 // The interpolation start point: after a jump (new game, new point) it must be the new state,
 // or one frame draws the ball halfway between the floor and the server's paddle.
 function syncPrev() {
-  prevBall.x = s.ball.x; prevBall.y = s.ball.y; prevBall.z = s.ball.z;
-  for (let i = 0; i < 2; i++) { prevPads[i].x = s.pads[i].x; prevPads[i].y = s.pads[i].y; }
+  const b = mode === 'solo' ? j.ball : s.ball;
+  prevBall.x = b.x; prevBall.y = b.y; prevBall.z = b.z;
+  if (mode === 'solo') { prevPads[0].x = j.bat.x; prevPads[0].y = j.bat.y; prevPads[0].z = j.bat.z; }
+  else for (let i = 0; i < 2; i++) { prevPads[i].x = s.pads[i].x; prevPads[i].y = s.pads[i].y; }
 }
 
 function tick(t: number) {
   syncPrev();
+  if (mode === 'solo') { tickSolo(t); return; }
   events.length = 0;
   if (screen === 'play' && autoplay) autoplay.tick(s, events, between > 0);
   else if (screen === 'play') {
@@ -273,6 +301,37 @@ function tick(t: number) {
   if (between > 0) { coast(); return; }
   step(s, events);
   for (const e of events) handle(e, t);
+}
+
+// The autoplay bot for Solo: it reads where the ball will come down, misjudges it by a fixed
+// amount per bounce (more at lower levels), and can only move its hand so fast.
+const soloBot = { err: { x: 0, y: 0 }, bounces: -1, seed: 17 };
+function soloBotTarget() {
+  if (soloBot.bounces !== j.bounces) {
+    soloBot.bounces = j.bounces;
+    const r = () => { soloBot.seed = (soloBot.seed * 1103515245 + 12345) & 0x7fffffff; return soloBot.seed / 0x7fffffff - 0.5; };
+    const e = [0.16, 0.06, 0.012][autoLevel];
+    soloBot.err = { x: r() * e, y: r() * e };
+  }
+  if (j.held) { if (Math.abs(j.bat.x) < 0.01) J.release(j); return { x: 0, y: 0 }; }
+  const l = J.landing(j);
+  // Meet it a little on the far side of its travel and a little further out than it lands,
+  // so the bat's tilt sends it back toward the middle.
+  return { x: l.x * 1.2 + j.ball.vx * 0.12 + soloBot.err.x, y: l.y * 1.2 + j.ball.vy * 0.12 + soloBot.err.y };
+}
+
+function tickSolo(t: number) {
+  jev.length = 0;
+  if (screen === 'play') {
+    let tgt: { x: number; y: number } | null;
+    if (autoplay) {
+      const want = soloBotTarget(), v = 4 * TICK;
+      tgt = { x: j.bat.x + Math.max(-v, Math.min(v, want.x - j.bat.x)), y: j.bat.y + Math.max(-v, Math.min(v, want.y - j.bat.y)) };
+    } else tgt = input.usingKeys ? keyTarget() : targetAt(t);
+    J.moveBat(j, tgt ? tgt.x : j.bat.x, tgt ? tgt.y : j.bat.y);
+  }
+  J.step(j, jev);
+  for (const e of jev) handleSolo(e);
 }
 
 // After a point the ball keeps flying for the eye; the sim waits.
@@ -297,13 +356,9 @@ function handle(e: Event, t: number) {
     onHit(e.side, e.speed, e.x);
     stats.longest = Math.max(stats.longest, s.hits);
     if (e.speed > 8.5 && !reduced.matches && screen === 'play') stopUntil = t + 45;
-    if (mode === 'solo') hud();
   } else if (e.t === 'bounce') {
     sfx.bounce(e.speed, e.x / HALF_W * 0.6);
     fx.push({ kind: 'ring', x: e.x, y: e.y, age: 0, life: 0.35 });
-  } else if (e.t === 'wall') {
-    if (e.target) { sfx.patch(e.x / HALF_W * 0.6); stats.patches++; hud(); } else sfx.wall(e.speed, e.x / HALF_W * 0.6);
-    fx.push({ kind: 'wall', x: e.x, y: e.y, age: 0, life: e.target ? 0.5 : 0.25, gold: e.target, top: e.top });
   } else if (e.t === 'point') {
     s.live = false;
     between = 1.25;
@@ -318,24 +373,37 @@ function handle(e: Event, t: number) {
     el.live.textContent = `${what}. You ${a}, ${them} ${b}.${tag ? ` ${tag}.` : ''}`;
     hud(false, e.winner);
     if (winner(s.score) >= 0) pendingEnd = true;
-  } else if (e.t === 'out') {
-    // The ball stops where it touched the floor.
-    s.ball.vx = s.ball.vy = 0;
+  }
+}
+
+function handleSolo(e: J.JEvent) {
+  const pan = e.x / J.REACH.x * 0.5;
+  if (e.t === 'hit') {
+    if (e.edge) { sfx.wall(3, pan); call('Off the edge', false); }
+    else sfx.paddle(2.5 + e.speed * 1.2 + (e.high ? 3 : 0), pan, true);
+    navigator.vibrate?.(e.high ? 16 : 6);
+    pops.push({ x: e.x, y: e.y, z: j.bat.z, age: 0, life: 0.7, text: `+${e.gain}`, gold: e.clean || e.high, ring: true });
+    // Each step up in the multiplier gets a chime and a call.
+    if (e.clean && e.mult > 1 && j.streak % 5 === 0) { sfx.patch(pan); call(`Clean streak ×${e.mult}`, true); }
+    else if (e.high) call('High ball, double points', true);
+    hud();
+  } else if (e.t === 'drop') {
     sfx.miss();
-    between = 1;
-    if (screen === 'play') pendingEnd = true;
-    else between = 0.6;
+    between = 1.4;
+    pendingEnd = true;
+  } else if (e.t === 'floor') {
+    sfx.bounce(e.speed * 1.5, pan);
   }
 }
 
 function afterPoint() {
   if (pendingEnd) { finish(); return; }
   if (mode === 'match') nextPoint(s, screen === 'play' ? firstServer : 0);
-  if (screen !== 'play' && mode === 'match' && winner(s.score) >= 0) { s.score = [0, 0]; nextPoint(s, 0); }
+  if (screen !== 'play' && winner(s.score) >= 0) { s.score = [0, 0]; nextPoint(s, 0); }
   trail.length = 0;
   syncPrev();
   hud();
-  if (screen === 'play' && mode === 'match' && s.server === 1) el.live.textContent = `${LEVELS[saved.level].name} to serve`;
+  if (screen === 'play' && s.server === 1) el.live.textContent = `${LEVELS[saved.level].name} to serve`;
 }
 
 let callTimer = 0;
@@ -349,18 +417,24 @@ function call(text: string, mine: boolean) {
 
 // The replay: frames were recorded once per display frame, so interpolate between the two
 // either side of the playback time, or slow motion steps instead of gliding.
-function replayFrame(at: number): Frame | undefined {
+function replayFrame(at: number): Snap | undefined {
   let i = 1;
   while (i < history.length && history[i].t < at) i++;
   if (i >= history.length) return history[history.length - 1]?.f;
-  const a = history[i - 1], b = history[i];
-  const k = Math.max(0, Math.min(1, (at - a.t) / (b.t - a.t || 1)));
+  const a = history[i - 1].f, b = history[i].f;
+  const k = Math.max(0, Math.min(1, (at - history[i - 1].t) / (history[i].t - history[i - 1].t || 1)));
   const l = (p: number, q: number) => p + (q - p) * k;
-  return {
-    ball: { x: l(a.f.ball.x, b.f.ball.x), y: l(a.f.ball.y, b.f.ball.y), z: l(a.f.ball.z, b.f.ball.z) },
-    pads: [0, 1].map((j) => ({ x: l(a.f.pads[j].x, b.f.pads[j].x), y: l(a.f.pads[j].y, b.f.pads[j].y) })) as Frame['pads'],
-    trail: b.f.trail, live: b.f.live, target: b.f.target,
-  };
+  const lp = (p: { x: number; y: number; z?: number }, q: { x: number; y: number; z?: number }) => ({ x: l(p.x, q.x), y: l(p.y, q.y), z: l(p.z ?? 0, q.z ?? 0) });
+  const ball = lp(a.ball, b.ball);
+  if ('bat' in a && 'bat' in b) return { ball, bat: lp(a.bat, b.bat), trail: b.trail, live: b.live };
+  if ('pads' in a && 'pads' in b) return { ball, pads: [lp(a.pads[0], b.pads[0]), lp(a.pads[1], b.pads[1])], trail: b.trail, live: b.live };
+  return b;
+}
+
+function draw(f: Snap, t: number) {
+  if ('bat' in f) drawHand(g, cam, base, f, replay ? [] : pops, j.streak);
+  else drawFrame(g, cam, base, net!, f, replay ? [] : fx);
+  void t;
 }
 
 function frame(now: number) {
@@ -373,7 +447,7 @@ function frame(now: number) {
     // Slow motion over the last couple of seconds before the end. Pausing holds it.
     if (screen === 'play') replay.at += dt * 1000 * 0.4;
     const f = replayFrame(replay.t0 + replay.at);
-    if (f) draw(f, [], now / 1000);
+    if (f) draw(f, now / 1000);
     if (replay.t0 + replay.at >= replay.t1) { replay = null; showOver(); }
     return;
   }
@@ -393,36 +467,42 @@ function frame(now: number) {
   }
 
   for (let i = fx.length - 1; i >= 0; i--) if ((fx[i].age += dt) > fx[i].life) fx.splice(i, 1);
+  for (let i = pops.length - 1; i >= 0; i--) if ((pops[i].age += dt) > pops[i].life) pops.splice(i, 1);
   // Draw between the last two ticks so motion stays smooth at any refresh rate.
   const a = running ? Math.max(0, Math.min(1, (now - simT) / TICK_MS)) : 1;
-  const b = s.ball, lerp = (p: number, q: number) => p + (q - p) * a;
+  const lerp = (p: number, q: number) => p + (q - p) * a;
+  const b = mode === 'solo' ? j.ball : s.ball;
   const ball = { x: lerp(prevBall.x, b.x), y: lerp(prevBall.y, b.y), z: lerp(prevBall.z, b.z) };
-  const pads = [0, 1].map((i) => ({ x: lerp(prevPads[i].x, s.pads[i].x), y: lerp(prevPads[i].y, s.pads[i].y) })) as Frame['pads'];
+  const live = mode === 'solo' ? !j.held : s.live || between > 0;
   // The trail covers a fixed 120 ms, so it's the same length at 60 Hz and 120 Hz.
-  if (s.live || between > 0) {
+  if (live) {
     trail.push({ ...ball, t: now });
     while (trail.length && trail[0].t < now - TRAIL_MS) trail.shift();
   } else trail.length = 0;
-  const f: Frame = { ball, pads, trail: trail.slice(), live: s.live || between > 0, target: s.target };
+  let f: Snap;
+  if (mode === 'solo') {
+    f = { ball, bat: { x: lerp(prevPads[0].x, j.bat.x), y: lerp(prevPads[0].y, j.bat.y), z: lerp(prevPads[0].z, j.bat.z) }, trail: trail.slice(), live };
+  } else {
+    const pads = [0, 1].map((i) => ({ x: lerp(prevPads[i].x, s.pads[i].x), y: lerp(prevPads[i].y, s.pads[i].y) })) as Frame['pads'];
+    f = { ball, pads, trail: trail.slice(), live };
+  }
   if (screen === 'play') {
     history.push({ t: now, f });
     while (history.length && history[0].t < now - 2600) history.shift();
   }
-  draw(f, fx, now / 1000);
+  draw(f, now / 1000);
   prompt();
-}
-
-function draw(f: Frame, effects: Fx[], t: number) {
-  if (mode === 'solo') drawCourt(g, court, base, f, effects, t);
-  else drawFrame(g, cam, mode, base, net, f, effects, t);
 }
 
 let promptText = '';
 function prompt() {
-  const show = screen === 'play' && !replay && !pendingEnd && !s.live && between <= 0 && (mode === 'solo' || s.server === 0);
-  const text = show ? (coarse.matches ? 'Tap to serve' : 'Click or press Space to serve') : '';
+  let text = '';
+  if (screen === 'play' && !replay && !pendingEnd) {
+    if (mode === 'solo' && j.held) text = coarse.matches ? 'Tap to drop the ball' : 'Click or press Space to drop the ball';
+    else if (mode === 'match' && !s.live && between <= 0 && s.server === 0) text = coarse.matches ? 'Tap to serve' : 'Click or press Space to serve';
+  }
   if (text === promptText) return;
-  if (text) { el.prompt.textContent = text; el.live.textContent = 'Your serve'; }
+  if (text) { el.prompt.textContent = text; el.live.textContent = mode === 'solo' ? 'Ready' : 'Your serve'; }
   el.prompt.classList.toggle('on', !!text);
   promptText = text;
 }
@@ -438,8 +518,10 @@ function hud(fresh = false, scored: Side | -1 = -1) {
     el.sv1.classList.toggle('on', sv === 1);
     if (scored >= 0) { const b = scored ? el.s1 : el.s0; b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump'); }
   } else {
-    el.pts.textContent = String(s.points);
-    el.best.textContent = saved.best ? `Best ${Math.max(saved.best, s.points)}` : '';
+    el.pts.textContent = String(j.points);
+    const m = J.multiplier(j.streak);
+    el.mult.textContent = m > 1 ? `×${m}` : '';
+    el.best.textContent = saved.best ? `Best ${Math.max(saved.best, j.points)}` : '';
   }
   if (fresh) {
     saved.record.forEach(([w, l], i) => { $(`rec${i}`).textContent = w + l ? `${w}–${l}` : ''; });
@@ -480,12 +562,11 @@ function showOver() {
     const [w, l] = saved.record[saved.level];
     rows.push(['Longest rally', `${stats.longest} shots`], [`Record against ${L.name}`, `${w}–${l}`]);
   } else {
-    const best = s.points > saved.best;
-    if (best) { saved.best = s.points; k.textContent = 'New best'; k.classList.add('good'); }
+    const best = j.points > saved.best;
+    if (best) { saved.best = j.points; k.textContent = 'New best'; k.classList.add('good'); }
     else k.textContent = saved.best ? `Best ${saved.best}` : 'Solo';
-    h.textContent = `${s.points} ${s.points === 1 ? 'point' : 'points'}`;
-    // s.hits counts the serve too.
-    rows.push(['Returns', String(Math.max(0, s.hits - 1))], ['Lit patches', String(stats.patches)]);
+    h.textContent = `${j.points} ${j.points === 1 ? 'point' : 'points'}`;
+    rows.push(['Bounces', String(j.bounces)], ['Clean hits', String(j.cleans)], ['Longest clean streak', String(j.bestStreak)], ['High balls', String(j.highs)]);
   }
   save();
   dl.replaceChildren(...rows.flatMap(([a, b]) => { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = a; dd.textContent = b; return [dt, dd]; }));
@@ -543,4 +624,6 @@ requestAnimationFrame(frame);
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('/sw.js');
 
 // For scripts/flow.ts.
-(window as unknown as { __rally: () => unknown }).__rally = () => ({ s, screen, mode, between, stats, replay: !!replay, bots: bots.map((b) => ({ tx: b.tx, ty: b.ty })) });
+(window as unknown as { __rally: () => unknown }).__rally = () => ({
+  s, j, screen, mode, between, stats, replay: !!replay, bots: bots.map((b) => ({ tx: b.tx, ty: b.ty })),
+});

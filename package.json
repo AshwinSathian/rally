@@ -1,7 +1,7 @@
 {
   "name": "rally",
   "version": "1.0.0",
-  "description": "A paddle game in the browser: a classic single-paddle court and table tennis matches against a bot that reads the ball the way a person does.",
+  "description": "Table tennis in the browser: bounce the ball on your bat, or play a match against a bot that reads the ball the way a person does.",
   "homepage": "https://rally.ashwinsathian.com",
   "repository": { "type": "git", "url": "git+https://github.com/AshwinSathian/rally.git" },
   "license": "MIT",

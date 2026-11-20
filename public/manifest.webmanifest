@@ -1,7 +1,7 @@
 {
   "name": "Rally",
   "short_name": "Rally",
-  "description": "A classic single-paddle court and table tennis matches against the computer.",
+  "description": "Bounce a ball on your bat, or play table tennis against the computer.",
   "start_url": "/",
   "display": "fullscreen",
   "orientation": "any",

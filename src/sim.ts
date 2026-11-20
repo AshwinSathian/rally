@@ -1,4 +1,5 @@
-// Rally's physics and rules. Pure and deterministic: no DOM, no clock, no Math.random.
+// Rally's table: physics and rules for a match. Pure and deterministic: no DOM, no clock, no
+// Math.random. (Solo is a different game with its own physics, in juggle.ts.)
 // Units are metres and seconds. The table is centred on the origin; x runs across it,
 // y runs along it, and the player's end is y < 0.
 
@@ -13,11 +14,6 @@ export const PAD_R = 0.02; // thickness of that edge, as a capsule radius
 const REACH = HALF_W + 0.22; // how far out to either side a player can stand
 const HIT_R = BALL_R + PAD_R;
 export const CONTACT = PAD_HALF + HIT_R; // from the paddle's centre to the furthest contact
-// Solo is a court seen from above: walls on three sides and the floor along the bottom, a
-// little below the paddle. A ball that touches the floor ends the game.
-export const SOLO_FLOOR = -HALF_L - 0.55;
-export const TARGET_HALF = 0.16; // half the width of the lit patch on the top wall
-const MAX_ANGLE = 0.4; // solo: radians off straight at the paddle's tip (about 23 degrees)
 export const LAND_REACH = HALF_W * 1.136; // match: where a hit off the paddle's very tip lands
 const START_SPEED = 3.3;
 const SPEED_STEP = 0.11;
@@ -25,7 +21,6 @@ const MAX_SPEED = 11;
 const MAX_CURVE = 1.6; // m/s^2 of sideways pull from spin
 export const SPIN_DECAY = 0.9985; // per tick, so spin halves in about 1.9 s
 
-export type Mode = 'match' | 'solo';
 export type Side = 0 | 1; // 0 is the player (near end), 1 the far end
 
 export interface Vec { x: number; y: number }
@@ -49,61 +44,37 @@ export interface Ball {
 export type Event =
   | { t: 'hit'; side: Side; speed: number; u: number; x: number }
   | { t: 'bounce'; x: number; y: number; speed: number }
-  | { t: 'wall'; x: number; y: number; speed: number; target: boolean; top: boolean }
-  | { t: 'point'; winner: Side; why: 'wide' | 'missed' }
-  | { t: 'out' }; // solo: the ball got past the paddle
+  | { t: 'point'; winner: Side; why: 'wide' | 'missed' };
 
 export interface State {
-  mode: Mode;
   ball: Ball;
   pads: [Paddle, Paddle];
   live: boolean; // ball in play
   lastHit: Side;
   hits: number; // in this rally
-  // match
   score: [number, number];
   server: Side;
-  // solo
-  points: number;
-  target: number; // centre x of the lit patch on the far wall
-  halfW: number; // solo: half the court's width; it's wider on wide screens
-  seed: number;
 }
 
 // Where each paddle may go. The near edge of the zone overlaps the table by a little, which
 // still sits behind the deepest landing spot, so a ball always lands before it can be hit.
-export function zone(side: Side, mode: Mode) { return ZONES[mode][side]; }
-const ZONES = { match: [makeZone(0, 'match'), makeZone(1, 'match')], solo: [makeZone(0, 'solo'), makeZone(1, 'solo')] };
-function makeZone(side: Side, mode: Mode) {
-  // The paddle mostly slides sideways; a short band forward lets a push add pace.
-  if (mode === 'solo') return { x0: -HALF_W + 0.05, x1: HALF_W - 0.05, y0: SOLO_FLOOR + 0.14, y1: SOLO_FLOOR + 0.45 };
+export function zone(side: Side) { return ZONES[side]; }
+const ZONES = [makeZone(0), makeZone(1)];
+function makeZone(side: Side) {
   const y0 = HALF_L - 0.12, y1 = HALF_L + 0.55;
   return side === 0
     ? { x0: -REACH, x1: REACH, y0: -y1, y1: -y0 }
     : { x0: -REACH, x1: REACH, y0, y1 };
 }
 
-// mulberry32: tiny, seedable, good enough for where a target appears.
-export function rand(s: State) {
-  let t = (s.seed = (s.seed + 0x6d2b79f5) | 0);
-  t = Math.imul(t ^ (t >>> 15), t | 1);
-  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-}
-
 function pad(y: number): Paddle { return { x: 0, y, px: 0, py: y, vx: 0, vy: 0 }; }
 
-// Solo courts run from the table's width (portrait) up to MAX_SOLO_HALF_W * 2 (landscape).
-export const MAX_SOLO_HALF_W = 1.4;
-
-export function create(mode: Mode, seed = 1, halfW = HALF_W): State {
+export function create(): State {
   const s: State = {
-    mode, live: false, lastHit: 0, hits: 0, score: [0, 0], server: 0, points: 0, target: 0, seed,
-    halfW: clamp(halfW, HALF_W, MAX_SOLO_HALF_W),
+    live: false, lastHit: 0, hits: 0, score: [0, 0], server: 0,
     ball: { x: 0, y: 0, vx: 0, vy: 0, curve: 0, z: 0, z0: 0, arcAge: 0, arcT: 0, arcH: 0, bounceY: 0, bounced: false },
     pads: [pad(-HALF_L - 0.2), pad(HALF_L + 0.2)],
   };
-  if (mode === 'solo') { s.pads[1].y = 99; s.target = (rand(s) - 0.5) * (2 * s.halfW - 0.4); }
   holdBall(s);
   return s;
 }
@@ -131,7 +102,7 @@ export function holdBall(s: State) {
   b.vx = b.vy = b.curve = 0;
   b.arcT = 0;
   b.bounced = false;
-  const p = s.pads[s.mode === 'solo' ? 0 : s.server];
+  const p = s.pads[s.server];
   b.x = p.x;
   b.y = p.y + (p.y < 0 ? 1 : -1) * (HIT_R + 0.01);
   b.z = 0.16;
@@ -142,14 +113,14 @@ export function holdBall(s: State) {
 // table it lands on the left of theirs. `u` overrides that (the bot picks its own).
 export function serve(s: State, out?: Event[], u?: number) {
   if (s.live) return;
-  const side: Side = s.mode === 'solo' ? 0 : s.server;
+  const side = s.server;
   const p = s.pads[side];
   // A serve from outside the table's width would be out before it started.
-  const edge = (s.mode === 'solo' ? s.halfW : HALF_W) - 0.12;
+  const edge = HALF_W - 0.12;
   p.x = Math.max(-edge, Math.min(edge, p.x));
   s.ball.x = p.x;
   const aim = u ?? clamp(p.x / HALF_W * 0.7 + p.vx * 0.25, -0.7, 0.7);
-  strike(s, side, s.mode === 'solo' ? 0 : aim);
+  strike(s, side, aim);
   s.live = true;
   out?.push({ t: 'hit', side, speed: Math.hypot(s.ball.vx, s.ball.vy), u: aim, x: s.ball.x });
 }
@@ -174,24 +145,17 @@ function strike(s: State, side: Side, u: number) {
   const fwd = Math.min(s.hits === 0 ? 1.5 : Infinity, Math.max(0, p.vy * dir));
   const base = Math.min(MAX_SPEED, START_SPEED + SPEED_STEP * s.hits);
   const speed = Math.min(MAX_SPEED, Math.max(base, Math.hypot(b.vx, b.vy) * 0.92) + fwd * 0.55);
-  if (s.mode === 'solo') {
-    const angle = u * MAX_ANGLE + clamp(p.vx * 0.06, -0.2, 0.2);
-    b.vx = speed * Math.sin(angle);
-    b.vy = speed * Math.cos(angle) * dir;
-  } else {
-    // In a match the contact point picks where across the table the ball lands, wherever you
-    // stand (landX). Moving the paddle sideways nudges the landing spot a little further.
-    const depth = clamp(0.45 + (speed - START_SPEED) * 0.11, 0.45, HALF_L - 0.2);
-    b.bounceY = dir * depth;
-    const lx = landX(u) + clamp(p.vx * 0.05, -0.05, 0.05);
-    const ex = lx - b.x, ey = b.bounceY - b.y, len = Math.hypot(ex, ey);
-    b.vx = speed * ex / len;
-    b.vy = speed * ey / len;
-  }
+  // The contact point picks where across the table the ball lands, wherever you stand
+  // (landX). Moving the paddle sideways nudges the landing spot a little further.
+  const depth = clamp(0.45 + (speed - START_SPEED) * 0.11, 0.45, HALF_L - 0.2);
+  b.bounceY = dir * depth;
+  const lx = landX(u) + clamp(p.vx * 0.05, -0.05, 0.05);
+  const ex = lx - b.x, ey = b.bounceY - b.y, len = Math.hypot(ex, ey);
+  b.vx = speed * ex / len;
+  b.vy = speed * ey / len;
   b.curve = clamp(p.vx * 0.9, -MAX_CURVE, MAX_CURVE);
   b.bounced = false;
   // Height is for the eye only: an arc that peaks over the net and comes down on bounceY.
-  if (s.mode === 'solo') { s.lastHit = side; s.hits++; return; }
   arc(b, Math.abs((b.bounceY - b.y) / b.vy), 0.2 + 0.25 * START_SPEED / Math.hypot(b.vx, b.vy));
   s.lastHit = side;
   s.hits++;
@@ -242,16 +206,10 @@ function dist2Seg(x: number, y: number, h: number) {
 
 // Move a paddle toward where its controller wants it, inside its zone. Velocity is smoothed over
 // about 30 ms so one jittery pointer sample can't turn into a smash.
-// How far either way a paddle's centre may go. In Solo the paddle stops flush with the side
-// wall, which still lets it reach a ball touching that wall.
-export function padXMax(s: State, side: Side) {
-  return s.mode === 'solo' ? s.halfW - (CONTACT - BALL_R) : zone(side, s.mode).x1;
-}
-
 export function movePad(s: State, side: Side, tx: number, ty: number) {
-  const p = s.pads[side], z = zone(side, s.mode), xMax = padXMax(s, side);
+  const p = s.pads[side], z = zone(side);
   p.px = p.x; p.py = p.y;
-  p.x = clamp(tx, -xMax, xMax);
+  p.x = clamp(tx, z.x0, z.x1);
   p.y = clamp(ty, z.y0, z.y1);
   const k = 0.13;
   p.vx += ((p.x - p.px) / TICK - p.vx) * k;
@@ -262,7 +220,7 @@ export function movePad(s: State, side: Side, tx: number, ty: number) {
 export function step(s: State, out: Event[]) {
   const b = s.ball;
   if (!s.live) {
-    const p = s.pads[s.mode === 'solo' ? 0 : s.server];
+    const p = s.pads[s.server];
     b.x = p.x;
     b.y = p.y + (p.y < 0 ? 1 : -1) * (HIT_R + 0.01);
     return;
@@ -274,7 +232,7 @@ export function step(s: State, out: Event[]) {
 
   // Landing comes first: a ball that comes down inside this tick does so before any paddle
   // can reach it, and a wide one is called even if it would have touched a paddle after.
-  if (s.mode === 'match' && !b.bounced) {
+  if (!b.bounced) {
     const f = (b.bounceY - y0) / dy;
     if (f >= 0 && f <= 1) {
       const lx = x0 + dx * f;
@@ -289,7 +247,7 @@ export function step(s: State, out: Event[]) {
   // Paddles. Only the one the ball is heading for can hit it, so a ball that has just been
   // struck can't be struck again on its way out.
   const side: Side = b.vy < 0 ? 0 : 1;
-  if (s.mode === 'match' || side === 0) {
+  {
     const p = s.pads[side];
     const rx = x0 - p.px, ry = y0 - p.py;
     const t = sweep(rx, ry, dx - (p.x - p.px), dy - (p.y - p.py), PAD_HALF, HIT_R);
@@ -305,12 +263,10 @@ export function step(s: State, out: Event[]) {
       const rest = 1 - t;
       b.x += b.vx * TICK * rest;
       b.y += b.vy * TICK * rest;
-      if (s.mode === 'solo') s.points++;
       return;
     }
   }
 
-  if (s.mode === 'solo') { stepWalls(s, out); return; }
   b.x += dx; b.y += dy;
   // Past the receiver: the point goes to whoever hit it.
   if (Math.abs(b.y) > HALF_L + 0.9 || Math.abs(b.x) > 2.4) { end(s, s.lastHit, 'missed', out); return; }
@@ -321,43 +277,6 @@ export function step(s: State, out: Event[]) {
 
 function arc(b: Ball, t: number, h: number) {
   b.z0 = b.z; b.arcAge = 0; b.arcT = t; b.arcH = h;
-}
-
-// Solo: the top and both sides are walls. Bounces are solved in time order inside the
-// tick, so a fast ball into a corner leaves it after two exact reflections.
-function stepWalls(s: State, out: Event[]) {
-  const b = s.ball;
-  const xm = s.halfW - BALL_R, ym = HALF_L - BALL_R;
-  let left = TICK;
-  for (let guard = 0; guard < 4; guard++) {
-    const tx = b.vx > 0 ? (xm - b.x) / b.vx : b.vx < 0 ? (-xm - b.x) / b.vx : Infinity;
-    const ty = b.vy > 0 ? (ym - b.y) / b.vy : Infinity;
-    const t = Math.max(0, Math.min(tx, ty));
-    if (t >= left) { b.x += b.vx * left; b.y += b.vy * left; break; }
-    b.x += b.vx * t; b.y += b.vy * t;
-    left -= t;
-    const speed = Math.hypot(b.vx, b.vy);
-    if (tx <= ty) {
-      b.vx = -b.vx;
-      b.curve = -b.curve * 0.5;
-      out.push({ t: 'wall', x: b.x, y: b.y, speed, target: false, top: false });
-    } else {
-      b.vy = -b.vy;
-      const onTarget = Math.abs(b.x - s.target) <= TARGET_HALF;
-      if (onTarget) { s.points += 2; s.target = pickTarget(s); }
-      out.push({ t: 'wall', x: b.x, y: b.y, speed, target: onTarget, top: true });
-    }
-  }
-  b.x = clamp(b.x, -xm, xm);
-  if (b.y - BALL_R <= SOLO_FLOOR) { b.y = SOLO_FLOOR + BALL_R; s.live = false; out.push({ t: 'out' }); }
-}
-
-function pickTarget(s: State) {
-  // Somewhere new, at least 0.3 m from the old spot.
-  for (;;) {
-    const x = (rand(s) - 0.5) * (2 * s.halfW - 0.4);
-    if (Math.abs(x - s.target) > 0.3) return x;
-  }
 }
 
 function end(s: State, w: Side, why: 'wide' | 'missed', out: Event[]) {

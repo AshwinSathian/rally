@@ -61,6 +61,8 @@ body[data-screen=home] .hud { opacity: 0; transform: translateY(-8px); visibilit
 .solo-score { display: none; flex-direction: column; align-items: center; text-shadow: 0 2px 12px rgba(0, 0, 0, .4); }
 .solo-score b { font-size: 2.875rem; font-weight: 750; font-variant-numeric: tabular-nums; line-height: 1; letter-spacing: -.02em; }
 .solo-score span { font-size: 0.8125rem; font-weight: 600; color: var(--ink-2); margin-top: 2px; }
+.solo-score .mult { color: #FFC24D; font-size: 1rem; font-weight: 800; }
+.solo-score .mult:empty { display: none; }
 body[data-mode=solo] .board { display: none; }
 body[data-mode=solo] .solo-score { display: flex; }
 /* Landscape Solo: the court takes the full height, so the score moves to the left side. */

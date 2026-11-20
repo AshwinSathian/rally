@@ -1,9 +1,8 @@
 // Drawing. A pinhole camera stands behind the player's end; the table, floor and net never
 // move, so they are painted once per resize into offscreen layers, and each frame only draws
 // what moves, sorted far to near with the net slotted in at y = 0.
-import { BALL_R, HALF_L, HALF_W, PAD_HALF, PAD_R, zone, type Mode } from './sim.ts';
+import { BALL_R, HALF_L, HALF_W, PAD_HALF, PAD_R, zone } from './sim.ts';
 
-interface V3 { x: number; y: number; z: number }
 export interface Cam {
   eye: V3; r: V3; u: V3; f: V3;
   F: number; cx: number; cy: number;
@@ -27,33 +26,40 @@ const dot = (a: V3, b: V3) => a.x * b.x + a.y * b.y + a.z * b.z;
 const cross = (a: V3, b: V3): V3 => ({ x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
 const norm = (a: V3): V3 => { const l = Math.hypot(a.x, a.y, a.z); return { x: a.x / l, y: a.y / l, z: a.z / l }; };
 
-// The camera rises and tips down on tall screens, where there's room to see more of the far
-// half, and sits lower on wide ones, where the table needs to fill the width.
-export function camera(w: number, h: number, dpr: number, mode: Mode, top: number, left = 0): Cam {
-  const t = Math.max(0, Math.min(1, (w / h - 0.55) / (1.7 - 0.55)));
-  const eye = { x: 0, y: -HALF_L - 0.9 - t * 1.0, z: 5.2 - t * 3.7 };
-  const look = { x: 0, y: mode === 'solo' ? 0.1 : 0.15 + t * 0.2, z: 0 };
+export interface V3 { x: number; y: number; z: number }
+
+// A camera at `eye` looking at `look`, with its focal length and centre fitted so that every
+// point in `pts` lands inside the screen area (left, top) to (w, h).
+export function fitCamera(eye: V3, look: V3, pts: V3[], w: number, h: number, dpr: number, top: number, left = 0, bottomPad?: number): Cam {
   const f = norm(sub(look, eye));
   const r = norm(cross(f, { x: 0, y: 0, z: 1 }));
   const u = cross(r, f);
   const cam: Cam = { eye, r, u, f, F: 1, cx: 0, cy: 0, w, h, dpr };
-  // Fit the parts that matter (both paddle zones and the table) inside the screen, below the HUD.
-  const pts: V3[] = [];
-  const z0 = zone(0, mode), z1 = zone(1, mode);
-  for (const z of mode === 'solo' ? [z0] : [z0, z1]) for (const x of [z.x0 - 0.1, z.x1 + 0.1]) for (const y of [z.y0, Math.sign(z.y1) * Math.min(Math.abs(z.y1), HALF_L + 0.42)]) for (const zz of [PAD_Z + 0.09, PAD_Z - 0.18]) pts.push({ x, y, z: zz });
-  for (const x of [-HALF_W, HALF_W]) for (const y of [-HALF_L, HALF_L]) pts.push({ x, y, z: 0 });
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const p of pts) {
     const d = sub(p, eye), cz = dot(d, f);
     const sx = dot(d, r) / cz, sy = -dot(d, u) / cz;
     x0 = Math.min(x0, sx); x1 = Math.max(x1, sx); y0 = Math.min(y0, sy); y1 = Math.max(y1, sy);
   }
-  const pad = Math.min(w, h) * 0.04, bottom = pad + 8;
+  const pad = Math.min(w, h) * 0.04, bottom = bottomPad ?? pad + 8;
   const aw = w - left - pad * 2, ah = h - top - bottom;
   cam.F = Math.min(aw / (x1 - x0), ah / (y1 - y0));
   cam.cx = left + (w - left) / 2 - cam.F * (x0 + x1) / 2;
   cam.cy = top + ah / 2 - cam.F * (y0 + y1) / 2;
   return cam;
+}
+
+// The table camera rises and tips down on tall screens, where there's room to see more of the
+// far half, and sits lower on wide ones, where the table needs to fill the width.
+export function camera(w: number, h: number, dpr: number, top: number, left = 0): Cam {
+  const t = Math.max(0, Math.min(1, (w / h - 0.55) / (1.7 - 0.55)));
+  const eye = { x: 0, y: -HALF_L - 0.9 - t * 1.0, z: 5.2 - t * 3.7 };
+  const look = { x: 0, y: 0.15 + t * 0.2, z: 0 };
+  // Fit both paddle zones and the table inside the screen, below the HUD.
+  const pts: V3[] = [];
+  for (const z of [zone(0), zone(1)]) for (const x of [z.x0 - 0.1, z.x1 + 0.1]) for (const y of [z.y0, Math.sign(z.y1) * Math.min(Math.abs(z.y1), HALF_L + 0.42)]) for (const zz of [PAD_Z + 0.09, PAD_Z - 0.18]) pts.push({ x, y, z: zz });
+  for (const x of [-HALF_W, HALF_W]) for (const y of [-HALF_L, HALF_L]) pts.push({ x, y, z: 0 });
+  return fitCamera(eye, look, pts, w, h, dpr, top, left);
 }
 
 export function project(c: Cam, x: number, y: number, z: number) {
@@ -66,11 +72,11 @@ export function project(c: Cam, x: number, y: number, z: number) {
   };
 }
 
-// Screen point to the paddle plane: the inverse of project() for z = PAD_Z.
-export function unproject(c: Cam, sx: number, sy: number) {
+// Screen point to a horizontal plane (the paddle's, by default): the inverse of project().
+export function unproject(c: Cam, sx: number, sy: number, planeZ = PAD_Z) {
   const a = (sx - c.cx) / c.F, b = -(sy - c.cy) / c.F;
   const d = { x: c.f.x + c.r.x * a + c.u.x * b, y: c.f.y + c.r.y * a + c.u.y * b, z: c.f.z + c.r.z * a + c.u.z * b };
-  const t = (PAD_Z - c.eye.z) / d.z;
+  const t = (planeZ - c.eye.z) / d.z;
   return { x: c.eye.x + d.x * t, y: c.eye.y + d.y * t };
 }
 
@@ -97,7 +103,7 @@ function layer(c: Cam, old: Layer | null | undefined, x = 0, y = 0, w = c.w, h =
 }
 
 // Floor, table and lines. Everything here sits on or below the table top.
-export function paintBase(c: Cam, mode: Mode, old?: Layer) {
+export function paintBase(c: Cam, old?: Layer) {
   const { L, g } = layer(c, old);
   const bg = g.createLinearGradient(0, 0, 0, c.h);
   bg.addColorStop(0, C.bg0); bg.addColorStop(1, C.bg1);
@@ -136,13 +142,13 @@ export function paintBase(c: Cam, mode: Mode, old?: Layer) {
   strip(-HALF_W, -HALF_L, -HALF_W + lw, HALF_L);
   strip(HALF_W - lw, -HALF_L, HALF_W, HALF_L);
   strip(-HALF_W, -HALF_L, HALF_W, -HALF_L + lw);
-  if (mode === 'match') { strip(-HALF_W, HALF_L - lw, HALF_W, HALF_L); strip(-0.0015, -HALF_L, 0.0015, HALF_L); }
+  strip(-HALF_W, HALF_L - lw, HALF_W, HALF_L);
+  strip(-0.0015, -HALF_L, 0.0015, HALF_L);
   return L;
 }
 
-// The net, baked into a canvas only as big as the net itself. (Solo has its own view, court.ts.)
-export function paintNet(c: Cam, mode: Mode, old?: Layer | null): Layer | null {
-  if (mode === 'solo') return null;
+// The net, baked into a canvas only as big as the net itself. (Solo has its own view, hand.ts.)
+export function paintNet(c: Cam, old?: Layer | null): Layer {
   const o = 0.1525; // posts stand 15.25 cm out from the sides
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const sx of [-1, 1]) for (const z of [-0.02, NET_H + 0.01]) {
@@ -173,28 +179,25 @@ export function paintNet(c: Cam, mode: Mode, old?: Layer | null): Layer | null {
   return L;
 }
 
-export interface Fx { kind: 'ring' | 'flash' | 'wall'; x: number; y: number; age: number; life: number; side?: number; gold?: boolean; top?: boolean }
+export interface Fx { kind: 'ring' | 'flash'; x: number; y: number; age: number; life: number; side?: number }
 
 export interface Frame {
   ball: { x: number; y: number; z: number };
   pads: [{ x: number; y: number }, { x: number; y: number }];
   trail: { x: number; y: number; z: number }[];
   live: boolean;
-  target: number;
 }
 
-export function drawFrame(g: CanvasRenderingContext2D, c: Cam, mode: Mode, base: Layer, net: Layer | null, f: Frame, fx: Fx[], t: number) {
+export function drawFrame(g: CanvasRenderingContext2D, c: Cam, base: Layer, net: Layer, f: Frame, fx: Fx[]) {
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.drawImage(base.cv, base.x, base.y);
   g.setTransform(c.dpr, 0, 0, c.dpr, 0, 0);
   const items: { y: number; draw: () => void }[] = [];
   const b = f.ball;
-  items.push({ y: b.y, draw: () => drawBall(g, c, f, mode) });
+  items.push({ y: b.y, draw: () => drawBall(g, c, f) });
   items.push({ y: f.pads[0].y + 0.001, draw: () => drawPad(g, c, f.pads[0].x, f.pads[0].y, 0, fx) });
-  if (mode === 'match') {
-    items.push({ y: f.pads[1].y, draw: () => drawPad(g, c, f.pads[1].x, f.pads[1].y, 1, fx) });
-    if (net) items.push({ y: 0, draw: () => { g.setTransform(1, 0, 0, 1, 0, 0); g.drawImage(net.cv, net.x, net.y); g.setTransform(c.dpr, 0, 0, c.dpr, 0, 0); } });
-  }
+  items.push({ y: f.pads[1].y, draw: () => drawPad(g, c, f.pads[1].x, f.pads[1].y, 1, fx) });
+  items.push({ y: 0, draw: () => { g.setTransform(1, 0, 0, 1, 0, 0); g.drawImage(net.cv, net.x, net.y); g.setTransform(c.dpr, 0, 0, c.dpr, 0, 0); } });
   for (const e of fx) if (e.kind === 'ring') items.push({ y: e.y + 0.002, draw: () => drawRing(g, c, e) });
   items.sort((p, q) => q.y - p.y);
   for (const it of items) it.draw();
@@ -216,7 +219,7 @@ function drawRing(g: CanvasRenderingContext2D, c: Cam, e: Fx) {
 // Anything closer than this to the camera plane (or behind it) isn't drawn.
 const seen = (c: Cam, x: number, y: number, z: number) => (x - c.eye.x) * c.f.x + (y - c.eye.y) * c.f.y + (z - c.eye.z) * c.f.z > 0.4;
 
-function drawBall(g: CanvasRenderingContext2D, c: Cam, f: Frame, mode: Mode) {
+function drawBall(g: CanvasRenderingContext2D, c: Cam, f: Frame) {
   const b = f.ball;
   if (!seen(c, b.x, b.y, b.z)) return;
   const overTable = Math.abs(b.x) <= HALF_W && Math.abs(b.y) <= HALF_L;
@@ -245,7 +248,6 @@ function drawBall(g: CanvasRenderingContext2D, c: Cam, f: Frame, mode: Mode) {
   grad.addColorStop(0, C.ballHi); grad.addColorStop(0.5, C.ball); grad.addColorStop(1, '#C85A10');
   g.fillStyle = grad;
   g.beginPath(); g.arc(p.x, p.y, r, 0, Math.PI * 2); g.fill();
-  void mode;
 }
 
 // A paddle seen from behind: an oval face exactly as wide as its hitting edge, see-through so

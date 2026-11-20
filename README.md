@@ -5,7 +5,7 @@
 <h1 align="center">Rally</h1>
 
 <p align="center">
-  A paddle game in the browser: a classic single-paddle court seen from above, and table tennis matches to eleven against a computer opponent that reads the ball the way a person does.
+  Table tennis in the browser: bounce the ball on your bat for as long as you can, or play a match to eleven against a computer opponent that reads the ball the way a person does.
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
 
 **Match.** First to 11, win by two. Service changes every two points, and every point from 10–10. The opponent comes in three levels, Casual, Club and Pro, and your record against each is kept on the device. A shot that lands off the side of the table loses the point; so does a ball you can't reach.
 
-**Solo.** The classic one-paddle game, seen from straight above: walls on three sides, the floor along the bottom, and your paddle just above it. Keep the ball off the floor. Every return scores 1, and hitting the lit stretch of the top wall scores 3 and moves it. The ball speeds up with each return, and where it meets your paddle sets its angle, up to 23° off straight. The court is as wide as your screen suits, from 1.5 m on a phone held upright to 2.8 m on a wide screen, and keeps that width for the whole game.
+**Solo.** You hold the bat flat in front of you and bounce the ball on it, seen from just above your hand, until you miss and it falls to the floor. The ball's shadow on the rubber shows where it will land. Every bounce scores; hits inside the faint ring in the middle of the rubber are clean, and every five clean hits in a row raise the multiplier, up to ×4. Tap, click or press Space just as the ball lands to flick your wrist: the ball goes high and the bounce scores double. Hit the wooden rim and the ball dies off it sideways. The bounces come quicker and the ball drifts a little more with each one.
 
 The last two seconds of a game play back in slow motion before the result.
 
@@ -55,7 +55,11 @@ TypeScript and Vite with no runtime dependencies. The build inlines everything i
 
 The paddle's hitting edge is a capsule, and collision is solved as a sweep. Over one tick both the ball and the paddle move in straight lines, so subtracting the paddle's motion leaves one moving point against a still capsule, and the first contact time comes from a line–rectangle test and two line–circle tests. That is exact at any speed: a tick can't step over the paddle. `src/sim.test.ts` checks it against a brute-force walk of 20,000 sub-steps on 4,000 random cases, and against 20,000 random ticks with balls up to 40 m/s and paddles up to 60 m/s. The game caps the ball at 11 m/s.
 
-Only the paddle the ball is heading for can hit it, so a ball can't be struck twice on its way out. In Solo, wall bounces inside a tick are solved in time order, so a fast ball into a corner leaves after two exact reflections.
+Only the paddle the ball is heading for can hit it, so a ball can't be struck twice on its way out.
+
+**Solo's physics** (`src/juggle.ts`) is a separate model with real gravity. The bat's face is a disc; contact is found the same way, as the moment the gap between the ball's underside and the moving face closes within a tick, so a falling ball can't pass through it at any speed (tested up to 25 m/s). A bounce keeps the ball at a steady height unless you flick. Three things set where it goes next: it keeps some of its sideways speed, a moving bat drags it along, and the face pushes it outward in proportion to how far from the centre it landed. That last one is the skill: the ball drifts a little more with every bounce, and you bring it back toward the middle of your reach by meeting it slightly on its outer side.
+
+The drift and the push were tuned against a model of a hand that moves at most 1.2–4 m/s, misjudges the landing spot by 1.5–5 cm, and meets the ball 20% further out than it lands. Median bounces before a drop, 40 games each: 9 for the slowest and least accurate hand, 67 for a middle one, 349 for a good one, and a perfect hand never drops it. As with the match bots, the hand model's numbers are estimates.
 
 The ball's height is drawn from an arc fitted to each shot and never decides a point. Where a shot lands is fixed at the moment of the hit, which keeps the rules in two dimensions and the look in three.
 
@@ -89,7 +93,7 @@ The human model's parameters are estimates, not measurements, and each cell can 
 
 **Input.** Pointer events carry their own timestamps, and `getCoalescedEvents()` returns the samples the browser merged between frames. Each 240 Hz tick moves your paddle to where your finger was at that tick's time, interpolated between samples, so the speed and direction of a swing don't depend on the display's frame rate. Chromium's `pointerrawupdate` is used where it exists, and the canvas asks for a `desynchronized` context to cut a frame of latency where the browser allows.
 
-**Drawing** is Canvas 2D in two views. Solo (`src/court.ts`) is an orthographic court fitted below the score, or beside it in landscape. Matches (`src/view.ts`) go through a pinhole camera behind your end of the table. The camera is fitted to the screen on every resize: high and steep on a tall phone, where the far half needs the room, and low on a wide screen. The same camera inverted maps a pointer onto the paddle's plane. The floor, table and net never move, so they are painted into offscreen canvases (the net into one only as big as the net) and painted again only when the screen size changes; each frame draws those images and the moving pieces, sorted far to near with the net slotted in between. Frames are interpolated between ticks.
+**Drawing** is Canvas 2D through a pinhole camera in both modes. In Solo (`src/hand.ts`) it sits above and behind your hand, fitted so your reach and a high ball both stay on screen; the same camera inverted maps the pointer onto the bat's plane. Matches (`src/view.ts`) look from behind your end of the table. The camera is fitted to the screen on every resize: high and steep on a tall phone, where the far half needs the room, and low on a wide screen. The same camera inverted maps a pointer onto the paddle's plane. The floor, table and net never move, so they are painted into offscreen canvases (the net into one only as big as the net) and painted again only when the screen size changes; each frame draws those images and the moving pieces, sorted far to near with the net slotted in between. Frames are interpolated between ticks.
 
 **Speed.** On a phone viewport with the CPU slowed 4× and 150 ms of network latency, first paint is at about 320 ms, and a rally runs at 60 frames a second with no frame over 17 ms (`scripts/perf.ts`).
 
