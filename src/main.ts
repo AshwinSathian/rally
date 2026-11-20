@@ -1,7 +1,7 @@
 import './style.css';
 import { TICK, create, movePad, nextPoint, serve, winner, step, HALF_W, type Event, type Mode, type Side, type State } from './sim.ts';
 import { Bot, LEVELS } from './ai.ts';
-import { camera, drawFrame, paintBase, paintNet, unproject, type Cam, type Frame, type Fx } from './view.ts';
+import { camera, drawFrame, paintBase, paintNet, unproject, type Cam, type Frame, type Fx, type Layer } from './view.ts';
 import * as sfx from './audio.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -9,14 +9,29 @@ const canvas = $<HTMLCanvasElement>('game');
 // desynchronized lets the browser skip the compositor's queue where it can: less input lag.
 const g = canvas.getContext('2d', { alpha: false, desynchronized: true })!;
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+const coarse = matchMedia('(pointer: coarse)');
 const TICK_MS = TICK * 1000;
+const TRAIL_MS = 120;
+const el = {
+  prompt: $('prompt'), live: $('live'), call: $('call'), s0: $('s0'), s1: $('s1'), sv0: $('sv0'), sv1: $('sv1'),
+  pts: $('pts'), best: $('best-line'), paused: $<HTMLDialogElement>('paused'), over: $<HTMLDialogElement>('over'),
+};
 
 // --- saved data ------------------------------------------------------------------------------
 
 interface Saved { level: number; sound: boolean; best: number; record: [number, number][] }
 const KEY = 'rally:v1';
 const saved: Saved = { level: 1, sound: true, best: 0, record: [[0, 0], [0, 0], [0, 0]] };
-try { Object.assign(saved, JSON.parse(localStorage.getItem(KEY) ?? '{}')); } catch { /* first visit or storage blocked */ }
+// Take each stored field only if it has the right shape, so a damaged or hand-edited value
+// falls back to its default instead of breaking the game.
+try {
+  const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Record<keyof Saved, unknown>>;
+  const count = (n: unknown) => Number.isInteger(n) && (n as number) >= 0;
+  if (Number.isInteger(raw.level) && (raw.level as number) in LEVELS) saved.level = raw.level as number;
+  if (typeof raw.sound === 'boolean') saved.sound = raw.sound;
+  if (count(raw.best)) saved.best = raw.best as number;
+  if (Array.isArray(raw.record) && raw.record.length === 3 && raw.record.every((r) => Array.isArray(r) && r.length === 2 && r.every(count))) saved.record = raw.record as [number, number][];
+} catch { /* first visit, bad JSON or storage blocked */ }
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch { /* private mode: play on */ } };
 sfx.setSound(saved.sound);
 
@@ -31,30 +46,37 @@ let firstServer: Side = 0;
 let games = 0;
 let between = 0; // seconds left in the pause after a point
 let pendingEnd = false;
-let stats = { rally: 0, longest: 0, patches: 0 };
+let stats = { longest: 0, patches: 0 };
 let stopUntil = 0; // hit-stop: the sim holds still for a few ms after a hard smash
 const fx: Fx[] = [];
-const trail: Frame['trail'] = [];
+const trail: (Frame['ball'] & { t: number })[] = [];
 const history: { t: number; f: Frame }[] = []; // the last few seconds, for the slow replay
 let replay: { t0: number; t1: number; at: number } | null = null;
 
-// ?autoplay hands your paddle to a bot: for scripts/flow.ts and for watching.
+// ?autoplay hands your paddle to a bot: for scripts/flow.ts and for watching. ?autoplay=0 is Casual.
 const auto = new URLSearchParams(location.search).get('autoplay');
 const autoplay = auto === null ? null : new Bot(0, LEVELS[auto !== '' && Number(auto) in LEVELS ? Number(auto) : 2], 99);
 
 let cam: Cam;
-let base: HTMLCanvasElement, net: HTMLCanvasElement;
+let base: Layer, net: Layer | null;
+let layoutKey = '';
 
 function layout() {
   const dpr = Math.min(devicePixelRatio || 1, 2);
   const w = innerWidth, h = innerHeight;
-  canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
   const top = screen === 'home' ? 24 : mode === 'solo' ? 92 : 64;
   // On wide screens the menu takes the left side, so the table moves over to make room.
   const left = screen === 'home' && w >= 900 && w >= h ? Math.min(520, w * 0.36) : 0;
+  // Pausing and resuming change nothing here; only bake again when the picture would change.
+  const key = [w, h, dpr, mode, top, left].join();
+  if (key === layoutKey) return;
+  layoutKey = key;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
   cam = camera(w, h, dpr, mode, top, left);
-  base = paintBase(cam, mode);
-  net = paintNet(cam, mode);
+  base = paintBase(cam, mode, base);
+  net = paintNet(cam, mode, net);
+  // A finger that's down keeps the paddle where it is under the new camera.
+  if (input.down && input.touch) setTouchOffset(input.lastX, input.lastY);
 }
 
 // The menu sits over a live game between two bots.
@@ -63,35 +85,40 @@ function attract() {
   s = create('match', (Math.random() * 1e9) | 0);
   bots = [new Bot(0, LEVELS[2], 3), new Bot(1, LEVELS[1], 4)];
   document.body.dataset.mode = 'match';
-  between = 0; replay = null;
+  between = 0; replay = null; pendingEnd = false; history.length = 0; trail.length = 0;
+  syncPrev();
 }
 
 function start(m: Mode) {
   mode = m;
   document.body.dataset.mode = m;
   s = create(m, (Math.random() * 1e9) | 0);
-  firstServer = (games++ % 2) as Side;
-  s.server = m === 'solo' ? 0 : firstServer;
+  firstServer = m === 'solo' ? 0 : (games++ % 2) as Side;
+  s.server = firstServer;
   if (m === 'match') {
     const L = LEVELS[saved.level];
     bots = [new Bot(1, L, (Math.random() * 1e9) | 0)];
     $('them').textContent = L.name;
   } else bots = [];
-  // Put the paddle where the pointer last was so the first frame doesn't jump.
-  s.pads[0].x = s.pads[0].px = 0;
-  stats = { rally: 0, longest: 0, patches: 0 };
+  stats = { longest: 0, patches: 0 };
   between = 0; pendingEnd = false; replay = null; fx.length = 0; trail.length = 0; history.length = 0;
-  input.samples.length = 0;
+  input.samples.length = 0; input.keys.clear(); input.usingKeys = false;
+  syncPrev();
   setScreen('play');
   hud(true);
+  sfx.wake();
+  // Keep keyboard focus in the game, not on a menu button that has just been hidden.
+  canvas.focus({ preventScroll: true });
 }
 
 function setScreen(next: Screen) {
   screen = next;
   document.body.dataset.screen = next;
-  if (next !== 'paused') $<HTMLDialogElement>('paused').close();
-  if (next !== 'over') $<HTMLDialogElement>('over').close();
-  if (next === 'paused') $<HTMLDialogElement>('paused').showModal();
+  $('hud').inert = next === 'home';
+  $('home').inert = next !== 'home';
+  if (next !== 'paused') el.paused.close();
+  if (next !== 'over') el.over.close();
+  if (next === 'paused') el.paused.showModal();
   layout();
   hud();
 }
@@ -102,9 +129,17 @@ function setScreen(next: Screen) {
 
 const input = {
   samples: [] as { t: number; x: number; y: number }[],
-  offX: 0, offY: 0, down: false, downAt: 0, downX: 0, downY: 0, moved: 0,
+  id: -1, // the one pointer that steers; a second finger is ignored
+  offX: 0, offY: 0, down: false, touch: false, downAt: 0, downX: 0, downY: 0, lastX: 0, lastY: 0, moved: 0,
   keys: new Set<string>(), kx: 0, ky: 0, usingKeys: false,
 };
+
+function setTouchOffset(sx: number, sy: number) {
+  // Touch moves the paddle by however far the finger moves, so the finger never covers it.
+  const p = unproject(cam, sx, sy);
+  input.offX = s.pads[0].x - p.x; input.offY = s.pads[0].y - p.y;
+  input.samples.length = 0;
+}
 
 function addSample(t: number, sx: number, sy: number) {
   const p = unproject(cam, sx, sy);
@@ -127,37 +162,36 @@ function targetAt(t: number) {
 
 function onMove(e: PointerEvent) {
   if (screen !== 'play') return;
-  if (e.pointerType !== 'mouse' && !input.down) return;
+  if (e.pointerType === 'mouse' ? input.down && e.pointerId !== input.id : e.pointerId !== input.id) return;
   const list = e.getCoalescedEvents?.() ?? [];
   for (const c of list.length ? list : [e]) addSample(c.timeStamp, c.clientX, c.clientY);
-  input.moved = Math.max(input.moved, Math.hypot(e.clientX - input.downX, e.clientY - input.downY));
+  input.lastX = e.clientX; input.lastY = e.clientY;
+  if (input.down) input.moved = Math.max(input.moved, Math.hypot(e.clientX - input.downX, e.clientY - input.downY));
 }
 
 canvas.addEventListener('pointerdown', (e) => {
   sfx.unlock();
-  if (screen !== 'play') return;
+  if (screen !== 'play' || input.down) return;
   canvas.setPointerCapture(e.pointerId);
-  input.down = true; input.downAt = e.timeStamp; input.downX = e.clientX; input.downY = e.clientY; input.moved = 0;
-  if (e.pointerType === 'mouse') { input.offX = input.offY = 0; }
-  else {
-    // Touch moves the paddle by however far the finger moves, so the finger never covers it.
-    const p = unproject(cam, e.clientX, e.clientY);
-    input.offX = s.pads[0].x - p.x; input.offY = s.pads[0].y - p.y;
-  }
-  addSample(e.timeStamp, e.clientX, e.clientY);
+  input.id = e.pointerId; input.down = true; input.touch = e.pointerType !== 'mouse';
+  input.downAt = e.timeStamp; input.downX = input.lastX = e.clientX; input.downY = input.lastY = e.clientY; input.moved = 0;
+  if (input.touch) setTouchOffset(e.clientX, e.clientY);
+  else { input.offX = input.offY = 0; addSample(e.timeStamp, e.clientX, e.clientY); }
 });
 // pointerrawupdate arrives sooner than pointermove where it exists (Chromium).
 canvas.addEventListener('onpointerrawupdate' in window ? 'pointerrawupdate' as 'pointermove' : 'pointermove', onMove);
-const release = (e: PointerEvent) => {
-  if (!input.down) return;
+canvas.addEventListener('pointerup', (e) => {
+  if (!input.down || e.pointerId !== input.id) return;
   input.down = false;
-  if (screen === 'play' && input.moved < 14 && e.timeStamp - input.downAt < 400) playerServe();
-};
-canvas.addEventListener('pointerup', release);
-canvas.addEventListener('pointercancel', () => { input.down = false; });
+  if (input.touch) input.id = -1;
+  if (input.moved < 14 && e.timeStamp - input.downAt < 400) playerServe();
+});
+canvas.addEventListener('pointercancel', (e) => { if (e.pointerId === input.id) { input.down = false; input.id = -1; } });
+// The mouse steers without a button held, so remember which pointer it is.
+canvas.addEventListener('pointerover', (e) => { if (e.pointerType === 'mouse' && !input.down) input.id = e.pointerId; });
 
 function playerServe() {
-  if (screen !== 'play' || s.live || between > 0) return;
+  if (screen !== 'play' || replay || pendingEnd || s.live || between > 0) return;
   if (mode === 'match' && s.server !== 0) return;
   serve(s, events);
   for (const e of events.splice(0)) handle(e, performance.now());
@@ -173,9 +207,9 @@ addEventListener('keydown', (e) => {
   const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   if (screen === 'play') {
     if (k in KEYMAP) { input.keys.add(k); e.preventDefault(); if (!input.usingKeys) { input.usingKeys = true; input.kx = s.pads[0].x; input.ky = s.pads[0].y; } }
-    else if (k === ' ' || k === 'Enter') { e.preventDefault(); playerServe(); }
-    else if (k === 'Escape' || k === 'p') { e.preventDefault(); pause(); }
-  } else if (screen === 'paused' && (k === 'p')) resume();
+    else if (k === ' ' || k === 'Enter') { e.preventDefault(); if (!e.repeat) playerServe(); }
+    else if ((k === 'Escape' || k === 'p') && !e.repeat) { e.preventDefault(); pause(); }
+  } else if (screen === 'paused' && k === 'p' && !e.repeat) resume();
 });
 addEventListener('keyup', (e) => { input.keys.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key); });
 
@@ -196,12 +230,18 @@ function keyTarget() {
 let simT = performance.now();
 let last = simT;
 const events: Event[] = [];
-let prevBall = { x: 0, y: 0, z: 0 };
-let prevPads = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
+const prevBall = { x: 0, y: 0, z: 0 };
+const prevPads = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
+
+// The interpolation start point: after a jump (new game, new point) it must be the new state,
+// or one frame draws the ball halfway between the floor and the server's paddle.
+function syncPrev() {
+  prevBall.x = s.ball.x; prevBall.y = s.ball.y; prevBall.z = s.ball.z;
+  for (let i = 0; i < 2; i++) { prevPads[i].x = s.pads[i].x; prevPads[i].y = s.pads[i].y; }
+}
 
 function tick(t: number) {
-  prevBall = { x: s.ball.x, y: s.ball.y, z: s.ball.z };
-  prevPads = [{ x: s.pads[0].x, y: s.pads[0].y }, { x: s.pads[1].x, y: s.pads[1].y }];
+  syncPrev();
   events.length = 0;
   if (screen === 'play' && autoplay) autoplay.tick(s, events, between > 0);
   else if (screen === 'play') {
@@ -235,7 +275,6 @@ function onHit(side: Side, speed: number, x: number) {
 function handle(e: Event, t: number) {
   if (e.t === 'hit') {
     onHit(e.side, e.speed, e.x);
-    stats.rally = s.hits;
     stats.longest = Math.max(stats.longest, s.hits);
     if (e.speed > 8.5 && !reduced.matches && screen === 'play') stopUntil = t + 45;
     if (mode === 'solo') hud();
@@ -252,11 +291,12 @@ function handle(e: Event, t: number) {
     const mine = e.winner === 0;
     sfx.point(mine);
     const them = LEVELS[saved.level].name;
-    const who = e.winner === 0 ? them : 'You';
     const [a, b] = s.score;
-    const tag = winner(s.score) >= 0 ? '' : a >= 10 && a === b ? ' · Deuce' : a >= 10 && a > b ? ' · Game point' : b >= 10 && b > a ? ` · Game point ${them}` : '';
-    call((e.why === 'wide' ? `${who} hit it wide` : who === 'You' ? 'You missed' : `${them} missed`) + tag, mine);
-    hud(true, e.winner);
+    const what = e.why === 'wide' ? `${mine ? them : 'You'} hit it wide` : mine ? `${them} missed` : 'You missed';
+    const tag = winner(s.score) >= 0 ? '' : a >= 10 && a === b ? 'Deuce' : a >= 10 && a > b ? 'Your game point' : b >= 10 && b > a ? `${them}’s game point` : '';
+    call(tag ? `${what}\n${tag}` : what, mine);
+    el.live.textContent = `${what}. You ${a}, ${them} ${b}.${tag ? ` ${tag}.` : ''}`;
+    hud(false, e.winner);
     if (winner(s.score) >= 0) pendingEnd = true;
   } else if (e.t === 'out') {
     sfx.miss();
@@ -271,17 +311,34 @@ function afterPoint() {
   if (mode === 'match') nextPoint(s, screen === 'play' ? firstServer : 0);
   if (screen !== 'play' && mode === 'match' && winner(s.score) >= 0) { s.score = [0, 0]; nextPoint(s, 0); }
   trail.length = 0;
+  syncPrev();
   hud();
+  if (screen === 'play' && mode === 'match' && s.server === 1) el.live.textContent = `${LEVELS[saved.level].name} to serve`;
 }
 
 let callTimer = 0;
 function call(text: string, mine: boolean) {
-  const el = $('call');
-  el.textContent = text;
-  el.classList.toggle('mine', mine);
-  el.classList.add('on');
+  el.call.textContent = text;
+  el.call.classList.toggle('mine', mine);
+  el.call.classList.add('on');
   clearTimeout(callTimer);
-  callTimer = window.setTimeout(() => el.classList.remove('on'), 1400);
+  callTimer = window.setTimeout(() => el.call.classList.remove('on'), 1400);
+}
+
+// The replay: frames were recorded once per display frame, so interpolate between the two
+// either side of the playback time, or slow motion steps instead of gliding.
+function replayFrame(at: number): Frame | undefined {
+  let i = 1;
+  while (i < history.length && history[i].t < at) i++;
+  if (i >= history.length) return history[history.length - 1]?.f;
+  const a = history[i - 1], b = history[i];
+  const k = Math.max(0, Math.min(1, (at - a.t) / (b.t - a.t || 1)));
+  const l = (p: number, q: number) => p + (q - p) * k;
+  return {
+    ball: { x: l(a.f.ball.x, b.f.ball.x), y: l(a.f.ball.y, b.f.ball.y), z: l(a.f.ball.z, b.f.ball.z) },
+    pads: [0, 1].map((j) => ({ x: l(a.f.pads[j].x, b.f.pads[j].x), y: l(a.f.pads[j].y, b.f.pads[j].y) })) as Frame['pads'],
+    trail: b.f.trail, live: b.f.live, target: b.f.target,
+  };
 }
 
 function frame(now: number) {
@@ -291,26 +348,25 @@ function frame(now: number) {
   if (!cam) return;
 
   if (replay) {
-    // Slow motion over the last couple of seconds before the end.
-    replay.at += dt * 1000 * 0.4;
-    const at = replay.t0 + replay.at;
-    let f = history[history.length - 1]?.f;
-    for (const h of history) if (h.t >= at) { f = h.f; break; }
+    // Slow motion over the last couple of seconds before the end. Pausing holds it.
+    if (screen === 'play') replay.at += dt * 1000 * 0.4;
+    const f = replayFrame(replay.t0 + replay.at);
     if (f) drawFrame(g, cam, mode, base, net, f, [], now / 1000);
-    if (at >= replay.t1) { replay = null; showOver(); }
+    if (replay.t0 + replay.at >= replay.t1) { replay = null; showOver(); }
     return;
   }
 
-  const running = screen === 'play' || screen === 'home';
-  if (!running) { simT = now; }
-  else if (now < stopUntil) { simT = now; }
+  // The menu's background rally stands still for anyone who has asked for less motion.
+  const running = screen === 'play' || (screen === 'home' && !reduced.matches);
+  if (!running || now < stopUntil) { simT = now; }
   else {
     if (now - simT > 250) simT = now - 250;
     while (simT + TICK_MS <= now) {
       simT += TICK_MS;
       tick(simT);
       if (between > 0 && (between -= TICK) <= 0) { between = 0; afterPoint(); }
-      if (screen === 'over' || replay) break;
+      // A hard hit freezes the picture on the contact itself, not a few ticks after it.
+      if (screen === 'over' || replay || simT < stopUntil) break;
     }
   }
 
@@ -320,7 +376,11 @@ function frame(now: number) {
   const b = s.ball, lerp = (p: number, q: number) => p + (q - p) * a;
   const ball = { x: lerp(prevBall.x, b.x), y: lerp(prevBall.y, b.y), z: lerp(prevBall.z, b.z) };
   const pads = [0, 1].map((i) => ({ x: lerp(prevPads[i].x, s.pads[i].x), y: lerp(prevPads[i].y, s.pads[i].y) })) as Frame['pads'];
-  if (s.live || between > 0) { trail.push(ball); if (trail.length > 8) trail.shift(); } else trail.length = 0;
+  // The trail covers a fixed 120 ms, so it's the same length at 60 Hz and 120 Hz.
+  if (s.live || between > 0) {
+    trail.push({ ...ball, t: now });
+    while (trail.length && trail[0].t < now - TRAIL_MS) trail.shift();
+  } else trail.length = 0;
   const f: Frame = { ball, pads, trail: trail.slice(), live: s.live || between > 0, target: s.target };
   if (screen === 'play') {
     history.push({ t: now, f });
@@ -330,29 +390,29 @@ function frame(now: number) {
   prompt();
 }
 
+let promptText = '';
 function prompt() {
-  const el = $('prompt');
-  const touch = matchMedia('(pointer: coarse)').matches;
-  const show = screen === 'play' && !s.live && between <= 0 && (mode === 'solo' || s.server === 0);
-  if (show) el.textContent = touch ? 'Tap to serve' : 'Click or press Space to serve';
-  if (show && !el.classList.contains('on')) $('live').textContent = 'Your serve';
-  el.classList.toggle('on', show);
+  const show = screen === 'play' && !replay && !pendingEnd && !s.live && between <= 0 && (mode === 'solo' || s.server === 0);
+  const text = show ? (coarse.matches ? 'Tap to serve' : 'Click or press Space to serve') : '';
+  if (text === promptText) return;
+  if (text) { el.prompt.textContent = text; el.live.textContent = 'Your serve'; }
+  el.prompt.classList.toggle('on', !!text);
+  promptText = text;
 }
 
 // --- HUD, pause, end -------------------------------------------------------------------------
 
 function hud(fresh = false, scored: Side | -1 = -1) {
   if (mode === 'match') {
-    $('s0').textContent = String(s.score[0]);
-    $('s1').textContent = String(s.score[1]);
+    el.s0.textContent = String(s.score[0]);
+    el.s1.textContent = String(s.score[1]);
     const sv = screen === 'play' && !pendingEnd ? s.server : -1;
-    $('sv0').classList.toggle('on', sv === 0);
-    $('sv1').classList.toggle('on', sv === 1);
-    if (scored >= 0) { const el = $(`s${scored}`); el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); }
-    if (scored >= 0) $('live').textContent = `You ${s.score[0]}, ${LEVELS[saved.level].name} ${s.score[1]}`;
+    el.sv0.classList.toggle('on', sv === 0);
+    el.sv1.classList.toggle('on', sv === 1);
+    if (scored >= 0) { const b = scored ? el.s1 : el.s0; b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump'); }
   } else {
-    $('pts').textContent = String(s.points);
-    $('best-line').textContent = saved.best ? `Best ${Math.max(saved.best, s.points)}` : '';
+    el.pts.textContent = String(s.points);
+    el.best.textContent = saved.best ? `Best ${Math.max(saved.best, s.points)}` : '';
   }
   if (fresh) {
     saved.record.forEach(([w, l], i) => { $(`rec${i}`).textContent = w + l ? `${w}–${l}` : ''; });
@@ -362,9 +422,12 @@ function hud(fresh = false, scored: Side | -1 = -1) {
 
 function pause() {
   if (screen !== 'play') return;
+  // A key held when focus left would otherwise stay "down" forever: its keyup went elsewhere.
+  input.keys.clear(); input.down = false; if (input.touch) input.id = -1;
   setScreen('paused');
+  sfx.sleep();
 }
-function resume() { setScreen('play'); simT = performance.now(); }
+function resume() { setScreen('play'); simT = performance.now(); sfx.wake(); canvas.focus({ preventScroll: true }); }
 
 function finish() {
   pendingEnd = false;
@@ -389,18 +452,17 @@ function showOver() {
     h.textContent = won ? `You won ${s.score[0]}–${s.score[1]}` : `${L.name} won ${s.score[1]}–${s.score[0]}`;
     const [w, l] = saved.record[saved.level];
     rows.push(['Longest rally', `${stats.longest} shots`], [`Record against ${L.name}`, `${w}–${l}`]);
-    $('live').textContent = h.textContent;
   } else {
     const best = s.points > saved.best;
     if (best) { saved.best = s.points; k.textContent = 'New best'; k.classList.add('good'); }
     else k.textContent = saved.best ? `Best ${saved.best}` : 'Solo';
     h.textContent = `${s.points} ${s.points === 1 ? 'point' : 'points'}`;
-    rows.push(['Returns', String(s.hits)], ['Lit patches', String(stats.patches)]);
-    $('live').textContent = `Out. ${h.textContent}${best ? ', a new best' : ''}`;
+    // s.hits counts the serve too.
+    rows.push(['Returns', String(Math.max(0, s.hits - 1))], ['Lit patches', String(stats.patches)]);
   }
   save();
   dl.replaceChildren(...rows.flatMap(([a, b]) => { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = a; dd.textContent = b; return [dt, dd]; }));
-  $<HTMLDialogElement>('over').showModal();
+  el.over.showModal();
   hud(true);
 }
 
@@ -408,7 +470,8 @@ function menu() {
   attract();
   setScreen('home');
   hud(true);
-  document.querySelector<HTMLButtonElement>(`.levels button[data-level="${saved.level}"]`)!.focus({ preventScroll: true });
+  sfx.wake();
+  document.querySelector<HTMLButtonElement>(`.levels button[data-level="${saved.level}"]`)?.focus({ preventScroll: true });
 }
 
 $('go-solo').addEventListener('click', () => { sfx.unlock(); start('solo'); });
@@ -420,7 +483,7 @@ const snd = $<HTMLInputElement>('sound');
 snd.checked = saved.sound;
 snd.addEventListener('change', () => { saved.sound = snd.checked; sfx.setSound(snd.checked); save(); if (snd.checked) { sfx.unlock(); sfx.paddle(5, 0, true); } });
 
-for (const d of [$<HTMLDialogElement>('paused'), $<HTMLDialogElement>('over')]) {
+for (const d of [el.paused, el.over]) {
   d.addEventListener('click', (e) => {
     const act = (e.target as HTMLElement).closest('button')?.dataset.act;
     if (act === 'resume') resume();
@@ -431,12 +494,16 @@ for (const d of [$<HTMLDialogElement>('paused'), $<HTMLDialogElement>('over')]) 
   d.addEventListener('cancel', (e) => { e.preventDefault(); if (d.id === 'paused') resume(); else menu(); });
 }
 
-addEventListener('resize', () => layout());
-document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
+// Resize fires many times during a drag or rotation; lay out at most once a frame.
+let resizeQueued = false;
+addEventListener('resize', () => { if (!resizeQueued) { resizeQueued = true; requestAnimationFrame(() => { resizeQueued = false; layout(); }); } });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { pause(); sfx.sleep(); } else if (screen === 'home') sfx.wake();
+});
 addEventListener('blur', () => pause());
 
 attract();
-layout();
+setScreen('home');
 hud(true);
 requestAnimationFrame(frame);
 

@@ -43,7 +43,9 @@ The last two seconds of a game play back in slow motion before the result.
 
 Touch moves the paddle by however far your finger moves, so your finger can rest anywhere and never covers the paddle. The mouse puts the paddle where the pointer is.
 
-**Aiming.** Where the ball meets your paddle decides where it lands across the table: the middle sends it to the middle, and the last tenth at either end sends it off the side. Pushing forward as you hit adds pace. Moving sideways as you hit adds spin, and the ball curves.
+**Aiming.** Where the ball meets your paddle decides where it lands across the table. The mapping is gentle in the middle and steep at the ends, so a centred hit is safe, the corners take a hit near the tip, and only the rounded tip itself (about 7% of the paddle) sends the ball off the side. Pushing forward as you hit adds pace. Moving sideways as you hit adds spin, and the ball curves.
+
+**Serving.** Your serve lands on the side of the table you serve from, and a sideways flick pushes it wider. Pushing forward adds a little pace, up to a cap, so a flicked mouse can't produce an unreturnable serve.
 
 ## How it's built
 
@@ -63,17 +65,27 @@ The ball's height is drawn from an arc fitted to each shot and never decides a p
 - Its estimate is off by a fixed number of standard deviations per shot, scaled by the flight time left, so its guess converges as the ball comes in instead of jittering. Curving balls are misread more.
 - Its paddle has a top speed and acceleration, and it brakes to stop on its target.
 
-It aims away from you, as close to the side as its level dares, by choosing where on its paddle to meet the ball. A misread therefore moves the contact point and sends its shot somewhere else, sometimes off the table. Its errors come out of the same shot model as yours; there is no roll of the dice that decides it should miss.
+It aims away from you, as close to the side as its level dares, by choosing where on its paddle to meet the ball, and it aims nearer the middle when a fast ball leaves it short of time. A misread therefore moves the contact point and sends its shot somewhere else, sometimes off the table. Its errors come out of the same shot model as yours; there is no roll of the dice that decides it should miss.
 
 Bots against bots, 100 matches per pairing (`npm run bench`):
 
 | Row against column | Casual | Club | Pro |
 |---|---|---|---|
-| **Casual** | 43% (9.3–9.6) | 0% (1.5–11) | 0% (0.9–11) |
-| **Club** | 100% (11–1.7) | 50% (9.3–9.5) | 0% (1.5–11) |
-| **Pro** | 100% (11–1.2) | 100% (11–1.5) | 52% (9.3–9.3) |
+| **Casual** | 47% (9.1–9.6) | 0% (1.6–11) | 0% (0.4–11) |
+| **Club** | 100% (11–1.3) | 44% (9.3–10.0) | 0% (0.3–11) |
+| **Pro** | 100% (11–0.3) | 100% (11–0.4) | 55% (9.4–9.5) |
 
-Each cell is the row player's win rate and the average score. Rallies run about 9 shots between two Casual bots and 23 between two Pros, serves included. Bots at different levels sit far apart because each makes the same kind of error on every shot. People make different mistakes, so the gaps against a person won't match this table, and the levels haven't been tuned against human play yet.
+Each cell is the row bot's win rate and the average score. Bots at different levels sit far apart because each makes the same kind of error on every shot.
+
+**Tuning against people.** The levels were tuned against a model of a human player rather than against the bots: a 0.20–0.30 s reaction, a per-shot misjudgement of where the ball will be and of where on the paddle it will meet, curve only partly read, and a hand that follows the eye 50–100 ms late at 60 Hz but with no speed limit, which is what a mouse gives you. Win rates over 20 matches per cell, for that model at three skill settings:
+
+| Modelled player | Casual | Club | Pro |
+|---|---|---|---|
+| First-timer | 50% | 0% | 0% |
+| Average | 100% | 40% | 0% |
+| Good | 100% | 100% | 40% |
+
+The human model's parameters are estimates, not measurements, and each cell can be off by about ten points. One weakness is known: a good player who blocks every ball back to the middle beats Pro, because the bot loses the very long rallies that follow. No parameter change fixed it without making Pro unbeatable for everyone else.
 
 **Input.** Pointer events carry their own timestamps, and `getCoalescedEvents()` returns the samples the browser merged between frames. Each 240 Hz tick moves your paddle to where your finger was at that tick's time, interpolated between samples, so the speed and direction of a swing don't depend on the display's frame rate. Chromium's `pointerrawupdate` is used where it exists, and the canvas asks for a `desynchronized` context to cut a frame of latency where the browser allows.
 

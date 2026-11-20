@@ -20,7 +20,7 @@ export const C = {
   table: '#1D4F91', tableHi: '#2A66B3', edge: '#0F2C55', line: '#F4F7FB',
   net: 'rgba(12,18,30,0.55)', tape: '#F4F7FB',
   ball: '#FF8A2A', ballHi: '#FFD2A6',
-  you: '#E5484D', youRim: '#FF9A9D', them: '#2B2F38', themRim: '#D9B27C',
+  you: '#E5484D', youRim: '#FF9A9D', them: '#4A5160', themRim: '#D9B27C',
   wall: '#173F75', patch: '#FFB224',
 };
 
@@ -82,17 +82,22 @@ function poly(g: CanvasRenderingContext2D, c: Cam, pts: [number, number, number]
   g.closePath();
 }
 
-function layer(c: Cam) {
-  const cv = document.createElement('canvas');
-  cv.width = Math.round(c.w * c.dpr); cv.height = Math.round(c.h * c.dpr);
+// A baked image and where its top-left corner goes on the screen, in device pixels.
+export interface Layer { cv: HTMLCanvasElement; x: number; y: number }
+
+// A canvas covering the CSS-pixel box (x, y, w, h), drawn in screen coordinates. An old layer
+// is resized and reused, so a resize doesn't leave full-screen canvases for the collector.
+function layer(c: Cam, old: Layer | null | undefined, x = 0, y = 0, w = c.w, h = c.h) {
+  const cv = old?.cv ?? document.createElement('canvas');
+  cv.width = Math.max(1, Math.ceil(w * c.dpr)); cv.height = Math.max(1, Math.ceil(h * c.dpr));
   const g = cv.getContext('2d')!;
-  g.scale(c.dpr, c.dpr);
-  return { cv, g };
+  g.setTransform(c.dpr, 0, 0, c.dpr, -x * c.dpr, -y * c.dpr);
+  return { L: { cv, x: Math.floor(x * c.dpr), y: Math.floor(y * c.dpr) }, g };
 }
 
 // Floor, table and lines. Everything here sits on or below the table top.
-export function paintBase(c: Cam, mode: Mode) {
-  const { cv, g } = layer(c);
+export function paintBase(c: Cam, mode: Mode, old?: Layer) {
+  const { L, g } = layer(c, old);
   const bg = g.createLinearGradient(0, 0, 0, c.h);
   bg.addColorStop(0, C.bg0); bg.addColorStop(1, C.bg1);
   g.fillStyle = bg; g.fillRect(0, 0, c.w, c.h);
@@ -142,17 +147,20 @@ export function paintBase(c: Cam, mode: Mode) {
       g.fill();
     }
   }
-  return cv;
+  return L;
 }
 
-// The net (match) or the back wall (solo): drawn between far and near objects.
-export function paintNet(c: Cam, mode: Mode) {
-  const { cv, g } = layer(c);
-  if (mode === 'solo') {
-    // The back wall is drawn by drawFrame so the lit patch can move; nothing to bake.
-    return cv;
-  }
+// The net, baked into a canvas only as big as the net itself. Solo has no net (its back wall
+// is drawn each frame so the lit patch can move).
+export function paintNet(c: Cam, mode: Mode, old?: Layer | null): Layer | null {
+  if (mode === 'solo') return null;
   const o = 0.1525; // posts stand 15.25 cm out from the sides
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const sx of [-1, 1]) for (const z of [-0.02, NET_H + 0.01]) {
+    const p = project(c, sx * (HALF_W + o + 0.012), 0, z);
+    x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
+  }
+  const { L, g } = layer(c, old, x0 - 4, y0 - 4, x1 - x0 + 8, y1 - y0 + 8);
   g.fillStyle = C.net;
   poly(g, c, [[-HALF_W - o, 0, 0], [HALF_W + o, 0, 0], [HALF_W + o, 0, NET_H], [-HALF_W - o, 0, NET_H]]);
   g.fill();
@@ -173,7 +181,7 @@ export function paintNet(c: Cam, mode: Mode) {
     poly(g, c, [[sx * (HALF_W + o) - 0.012, 0, -0.02], [sx * (HALF_W + o) + 0.012, 0, -0.02], [sx * (HALF_W + o) + 0.012, 0, NET_H + 0.01], [sx * (HALF_W + o) - 0.012, 0, NET_H + 0.01]]);
     g.fill();
   }
-  return cv;
+  return L;
 }
 
 export interface Fx { kind: 'ring' | 'flash' | 'wall'; x: number; y: number; age: number; life: number; side?: number; gold?: boolean }
@@ -186,9 +194,9 @@ export interface Frame {
   target: number;
 }
 
-export function drawFrame(g: CanvasRenderingContext2D, c: Cam, mode: Mode, base: HTMLCanvasElement, net: HTMLCanvasElement, f: Frame, fx: Fx[], t: number) {
+export function drawFrame(g: CanvasRenderingContext2D, c: Cam, mode: Mode, base: Layer, net: Layer | null, f: Frame, fx: Fx[], t: number) {
   g.setTransform(1, 0, 0, 1, 0, 0);
-  g.drawImage(base, 0, 0);
+  g.drawImage(base.cv, base.x, base.y);
   g.setTransform(c.dpr, 0, 0, c.dpr, 0, 0);
   const items: { y: number; draw: () => void }[] = [];
   const b = f.ball;
@@ -196,7 +204,7 @@ export function drawFrame(g: CanvasRenderingContext2D, c: Cam, mode: Mode, base:
   items.push({ y: f.pads[0].y + 0.001, draw: () => drawPad(g, c, f.pads[0].x, f.pads[0].y, 0, fx) });
   if (mode === 'match') {
     items.push({ y: f.pads[1].y, draw: () => drawPad(g, c, f.pads[1].x, f.pads[1].y, 1, fx) });
-    items.push({ y: 0, draw: () => { g.setTransform(1, 0, 0, 1, 0, 0); g.drawImage(net, 0, 0); g.setTransform(c.dpr, 0, 0, c.dpr, 0, 0); } });
+    if (net) items.push({ y: 0, draw: () => { g.setTransform(1, 0, 0, 1, 0, 0); g.drawImage(net.cv, net.x, net.y); g.setTransform(c.dpr, 0, 0, c.dpr, 0, 0); } });
   } else {
     items.push({ y: HALF_L + 0.01, draw: () => drawWall(g, c, f.target, fx, t) });
   }
@@ -306,9 +314,9 @@ function drawPad(g: CanvasRenderingContext2D, c: Cam, x: number, y: number, side
   g.beginPath();
   g.ellipse(p.x, p.y, rx, ry, 0, 0, Math.PI * 2);
   // Solid rubber; your own is a little see-through so a ball behind it still shows.
-  g.fillStyle = side === 0 ? `rgba(229,72,77,${0.82 + flash * 0.18})` : flash ? '#4A505C' : C.them;
+  g.fillStyle = side === 0 ? `rgba(229,72,77,${0.82 + flash * 0.18})` : flash ? '#6A7282' : C.them;
   g.fill();
-  g.lineWidth = Math.max(1.5, p.s * 0.006);
-  g.strokeStyle = flash ? '#FFFFFF' : side === 0 ? 'rgba(255,154,157,0.6)' : 'rgba(217,178,124,0.6)';
+  g.lineWidth = side === 0 ? Math.max(1.5, p.s * 0.006) : Math.max(2, p.s * 0.01);
+  g.strokeStyle = flash ? '#FFFFFF' : side === 0 ? 'rgba(255,154,157,0.6)' : C.themRim;
   g.stroke();
 }

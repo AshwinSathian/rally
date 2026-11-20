@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { create, movePad, nextPoint, serverFor, step, sweep, winner, HALF_L, HALF_W, BALL_R, PAD_HALF, PAD_R, type Event, type State } from './sim.ts';
+import { aimFor, create, landX, movePad, nextPoint, serve, serverFor, step, sweep, winner, HALF_L, HALF_W, BALL_R, PAD_HALF, PAD_R, type Event, type State } from './sim.ts';
 import { Bot, LEVELS, predict } from './ai.ts';
 
 // Reference for sweep(): walk the step in a million tiny pieces and report the first overlap.
@@ -127,4 +127,31 @@ test('solo: the ball stays inside the walls', () => {
     }
   }
   assert.ok(PAD_HALF > 0 && PAD_R > 0);
+});
+
+test('a ball that lands wide is called wide even if a paddle touches it in the same tick', () => {
+  const s = create('match', 3);
+  s.live = true; s.lastHit = 1;
+  Object.assign(s.ball, { x: 0.85, y: -1.165, vx: 0, vy: -11, curve: 0, bounceY: -1.17, bounced: false });
+  const p = s.pads[0];
+  p.x = p.px = 0.85; p.y = p.py = -1.25;
+  const ev: Event[] = [];
+  step(s, ev);
+  assert.deepEqual(ev.map((e) => e.t), ['point']);
+  assert.deepEqual(s.score, [1, 0]);
+});
+
+test('aimFor inverts landX, and only the paddle tip goes wide', () => {
+  for (let x = -HALF_W; x <= HALF_W; x += 0.01) assert.ok(Math.abs(landX(aimFor(x)) - x) < 1e-9, `x ${x}`);
+  // The share of the contact width that lands off the table.
+  let wide = 0;
+  for (let i = 0; i <= 1000; i++) if (Math.abs(landX(-1 + i / 500)) > HALF_W) wide++;
+  assert.ok(wide / 1001 < 0.1, `${wide} of 1001 offsets go wide`);
+});
+
+test('a flicked serve is no faster than a gentle one by more than the serve cap', () => {
+  const s = create('match', 4);
+  s.pads[0].vy = 30; // a mouse flicked forward as fast as it goes
+  serve(s);
+  assert.ok(Math.hypot(s.ball.vx, s.ball.vy) <= 3.3 + 1.5 * 0.55 + 1e-9);
 });

@@ -1,7 +1,7 @@
 // The opponent. It reads the ball the way a person does: late, roughly at first, better as the
 // ball gets closer, and it can only move so fast. Its prediction uses the game's own ball
 // physics, so when it misses it is because of those limits, never a dice roll that says "miss".
-import { HALF_L, HALF_W, LAND_REACH, PAD_HALF, TICK, clamp, movePad, serve, zone, type Ball, type Event, type Side, type State } from './sim.ts';
+import { CONTACT, HALF_L, HALF_W, SPIN_DECAY, TICK, aimFor, clamp, movePad, serve, zone, type Ball, type Event, type Side, type State } from './sim.ts';
 
 export interface Level {
   name: string;
@@ -14,14 +14,14 @@ export interface Level {
 }
 
 export const LEVELS: Level[] = [
-  { name: 'Casual', react: 0.28, sigma: 0.2, vmax: 2.3, amax: 9, margin: 0.42, smash: 0 },
-  { name: 'Club', react: 0.2, sigma: 0.12, vmax: 3, amax: 14, margin: 0.28, smash: 0.25 },
-  { name: 'Pro', react: 0.15, sigma: 0.07, vmax: 3.8, amax: 20, margin: 0.16, smash: 0.5 },
+  { name: 'Casual', react: 0.34, sigma: 0.3, vmax: 1.8, amax: 7, margin: 0.5, smash: 0 },
+  { name: 'Club', react: 0.26, sigma: 0.18, vmax: 2.4, amax: 12, margin: 0.36, smash: 0.2 },
+  { name: 'Pro', react: 0.16, sigma: 0.09, vmax: 4.5, amax: 32, margin: 0.22, smash: 0.5 },
 ];
 
 // Where the ball will cross y = yc, stepping exactly as sim.step does. Returns the time it takes
 // too, or null if it will never get there.
-export function predict(b: Ball, yc: number, curveDecay = 0.9985): { x: number; t: number } | null {
+export function predict(b: Ball, yc: number, curveDecay = SPIN_DECAY): { x: number; t: number } | null {
   if (b.vy === 0 || (yc - b.y) * b.vy < 0) return null;
   let x = b.x, y = b.y, vx = b.vx, c = b.curve, t = 0;
   for (let i = 0; i < 2400; i++) {
@@ -76,7 +76,11 @@ export class Bot {
     if (!s.live) {
       if (s.server === me) {
         tx = clamp(p.x, -HALF_W + 0.2, HALF_W - 0.2);
-        if (!hold && (this.serveIn -= TICK) <= 0) { serve(s, out); this.serveIn = 0.6 + this.rand() * 0.6; }
+        if (!hold && (this.serveIn -= TICK) <= 0) {
+          // Serve somewhere different each time, to either side, inside its margin.
+          const lx = (this.rand() < 0.5 ? -1 : 1) * (0.3 + this.rand() * 0.7) * (HALF_W - L.margin);
+          serve(s, out, aimFor(lx));
+          this.serveIn = 0.6 + this.rand() * 0.6; }
       }
       this.shot = -1;
     } else if (b.vy * dir > 0) {
@@ -86,11 +90,14 @@ export class Bot {
         this.wait = L.react * (0.8 + this.rand() * 0.4);
         this.z = this.gauss();
         const speed = Math.hypot(b.vx, b.vy);
-        this.smashing = speed < 4.6 && this.rand() < L.smash;
+        // A ball slower than the rally's pace so far is the one to step into.
+        this.smashing = speed < Math.min(11, 3.3 + 0.11 * s.hits) + 1.2 && this.rand() < L.smash;
         // Aim away from the other player, as wide as this level dares.
         const them = s.pads[(1 - me) as Side].x;
         const edge = HALF_W - L.margin;
         this.aimX = (them > 0 ? -1 : 1) * edge * (0.45 + this.rand() * 0.55);
+        // Short of time against a fast ball, it aims safer, nearer the middle.
+        this.aimX *= clamp((2.9 / speed - 0.25) / 0.3, 0.2, 1);
       }
       if (this.wait > 0) {
         this.wait -= TICK;
@@ -100,9 +107,8 @@ export class Bot {
         const hit = predict(b, yc);
         if (hit) {
           const guess = hit.x + this.z * L.sigma * hit.t * (1 + Math.abs(b.curve) * 0.4);
-          // Contact offset u lands the ball at u * LAND_REACH across the table.
-          const u = clamp(this.aimX / LAND_REACH, -0.85, 0.85);
-          tx = guess - u * PAD_HALF;
+          // Meet the ball at the contact offset that lands it on aimX.
+          tx = guess - aimFor(this.aimX) * CONTACT;
           ty = yc;
           // Step in late for a smash.
           if (this.smashing && hit.t < 0.16) ty = yc - dir * 0.45;

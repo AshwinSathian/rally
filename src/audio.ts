@@ -5,12 +5,23 @@ let noise: AudioBuffer | null = null;
 let out: GainNode | null = null;
 export let soundOn = true;
 
+let asleep = false;
+
 export function setSound(on: boolean) { soundOn = on; }
 
+// While paused or hidden the context is suspended, so the audio thread can idle.
+export function sleep() { asleep = true; if (ctx?.state === 'running') void ctx.suspend(); }
+export function wake() { asleep = false; if (ctx && ctx.state !== 'running') void ctx.resume(); }
+
 // Browsers only allow audio after a gesture; call this from the first pointerdown or keydown.
+// Safari can also leave the context 'interrupted' after a call or an app switch, so any state
+// other than running gets a resume on the next gesture.
 export function unlock() {
-  if (ctx) { if (ctx.state === 'suspended') void ctx.resume(); return; }
+  if (ctx) { if (ctx.state !== 'running' && !asleep) void ctx.resume(); return; }
   try {
+    // Game sounds should follow the iPhone's silent switch, like any other game's.
+    const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+    if (session) session.type = 'ambient';
     ctx = new AudioContext({ latencyHint: 'interactive' });
     out = ctx.createGain();
     out.gain.value = 0.6;
@@ -23,9 +34,9 @@ export function unlock() {
 }
 
 // modes: [frequency Hz, gain, decay seconds]
-function strike(modes: [number, number, number][], gain: number, pan: number, click: number, clickHz: number) {
+function strike(modes: [number, number, number][], gain: number, pan: number, click: number, clickHz: number, delay = 0) {
   if (!soundOn || !ctx || !out || ctx.state !== 'running') return;
-  const t = ctx.currentTime;
+  const t = ctx.currentTime + delay;
   const p = ctx.createStereoPanner();
   p.pan.value = Math.max(-1, Math.min(1, pan));
   p.connect(out);
@@ -70,9 +81,8 @@ export function patch(pan: number) {
 
 // A point: up a fifth when it's yours, down a third when it isn't.
 export function point(mine: boolean) {
-  if (!soundOn || !ctx) return;
   const notes = mine ? [784, 1175] : [659, 523];
-  notes.forEach((f, i) => setTimeout(() => strike([[f, 0.22, 0.35], [f * 2, 0.05, 0.2]], 0.6, 0, 0, 0), i * 110));
+  notes.forEach((f, i) => strike([[f, 0.22, 0.35], [f * 2, 0.05, 0.2]], 0.6, 0, 0, 0, i * 0.11));
 }
 
 export function miss() { strike([[180, 0.5, 0.18], [95, 0.4, 0.25]], 0.5, 0, 0.3, 400); }

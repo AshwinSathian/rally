@@ -9,16 +9,17 @@ export const HALF_W = TABLE_W / 2;
 export const HALF_L = TABLE_L / 2;
 export const BALL_R = 0.028;
 export const PAD_HALF = 0.13; // half the width of the paddle's hitting edge
-export const PAD_R = 0.02;
-const REACH = HALF_W + 0.22; // how far out to either side a player can stand // thickness of that edge, as a capsule radius
+export const PAD_R = 0.02; // thickness of that edge, as a capsule radius
+const REACH = HALF_W + 0.22; // how far out to either side a player can stand
 const HIT_R = BALL_R + PAD_R;
-const MAX_ANGLE = 0.62; // solo: radians off straight at the paddle's tip (about 36 degrees)
-export const LAND_REACH = HALF_W * 1.1; // match: where a hit off the paddle's tip lands
+export const CONTACT = PAD_HALF + HIT_R; // from the paddle's centre to the furthest contact
+const MAX_ANGLE = 0.4; // solo: radians off straight at the paddle's tip (about 23 degrees)
+export const LAND_REACH = HALF_W * 1.136; // match: where a hit off the paddle's very tip lands
 const START_SPEED = 3.3;
 const SPEED_STEP = 0.11;
 const MAX_SPEED = 11;
 const MAX_CURVE = 1.6; // m/s^2 of sideways pull from spin
-const SPIN_DECAY = 0.9985; // per tick, so spin halves in about 1.9 s
+export const SPIN_DECAY = 0.9985; // per tick, so spin halves in about 1.9 s
 
 export type Mode = 'match' | 'solo';
 export type Side = 0 | 1; // 0 is the player (near end), 1 the far end
@@ -66,7 +67,9 @@ export interface State {
 
 // Where each paddle may go. The near edge of the zone overlaps the table by a little, which
 // still sits behind the deepest landing spot, so a ball always lands before it can be hit.
-export function zone(side: Side, mode: Mode) {
+export function zone(side: Side, mode: Mode) { return ZONES[mode][side]; }
+const ZONES = { match: [makeZone(0, 'match'), makeZone(1, 'match')], solo: [makeZone(0, 'solo'), makeZone(1, 'solo')] };
+function makeZone(side: Side, mode: Mode) {
   if (mode === 'solo') return { x0: -HALF_W + 0.05, x1: HALF_W - 0.05, y0: -HALF_L - 0.45, y1: -HALF_L + 0.25 };
   const y0 = HALF_L - 0.12, y1 = HALF_L + 0.55;
   return side === 0
@@ -125,16 +128,30 @@ export function holdBall(s: State) {
 }
 
 // The server's paddle carries the ball until serve() is called.
-export function serve(s: State, out?: Event[]) {
+// The serve goes where you stand, pushed further by a sideways flick: from the left of the
+// table it lands on the left of theirs. `u` overrides that (the bot picks its own).
+export function serve(s: State, out?: Event[], u?: number) {
   if (s.live) return;
   const side: Side = s.mode === 'solo' ? 0 : s.server;
   const p = s.pads[side];
   // A serve from outside the table's width would be out before it started.
   p.x = Math.max(-HALF_W + 0.12, Math.min(HALF_W - 0.12, p.x));
   s.ball.x = p.x;
-  strike(s, side, 0);
+  const aim = u ?? clamp(p.x / HALF_W * 0.7 + p.vx * 0.25, -0.7, 0.7);
+  strike(s, side, s.mode === 'solo' ? 0 : aim);
   s.live = true;
-  out?.push({ t: 'hit', side, speed: Math.hypot(s.ball.vx, s.ball.vy), u: 0, x: s.ball.x });
+  out?.push({ t: 'hit', side, speed: Math.hypot(s.ball.vx, s.ball.vy), u: aim, x: s.ball.x });
+}
+
+// Where across the table a hit at contact offset u lands. Gentle in the middle and steep at
+// the tip, so a centred hit is safe and only the outer 7% of the paddle sends it off the side.
+export const landX = (u: number) => (0.65 * u + 0.35 * u * u * u) * LAND_REACH;
+
+// The contact offset that lands the ball at x (Newton's method on landX).
+export function aimFor(x: number) {
+  let u = clamp(x / LAND_REACH, -1, 1);
+  for (let i = 0; i < 6; i++) u -= (landX(u) - x) / ((0.65 + 1.05 * u * u) * LAND_REACH);
+  return clamp(u, -1, 1);
 }
 
 // The shot model. Where the ball meets the paddle sets its direction; the paddle's sideways
@@ -142,7 +159,8 @@ export function serve(s: State, out?: Event[]) {
 function strike(s: State, side: Side, u: number) {
   const b = s.ball, p = s.pads[side];
   const dir = side === 0 ? 1 : -1;
-  const fwd = Math.max(0, p.vy * dir);
+  // A serve can be pushed only a little: otherwise a flick of the mouse gives an unreturnable one.
+  const fwd = Math.min(s.hits === 0 ? 1.5 : Infinity, Math.max(0, p.vy * dir));
   const base = Math.min(MAX_SPEED, START_SPEED + SPEED_STEP * s.hits);
   const speed = Math.min(MAX_SPEED, Math.max(base, Math.hypot(b.vx, b.vy) * 0.92) + fwd * 0.55);
   if (s.mode === 'solo') {
@@ -151,11 +169,10 @@ function strike(s: State, side: Side, u: number) {
     b.vy = speed * Math.cos(angle) * dir;
   } else {
     // In a match the contact point picks where across the table the ball lands, wherever you
-    // stand: the middle of the paddle sends it to the middle, the last tenth of either end
-    // sends it off the side. Moving the paddle sideways pushes the landing spot further.
+    // stand (landX). Moving the paddle sideways nudges the landing spot a little further.
     const depth = clamp(0.45 + (speed - START_SPEED) * 0.11, 0.45, HALF_L - 0.2);
     b.bounceY = dir * depth;
-    const lx = u * LAND_REACH + clamp(p.vx * 0.05, -0.15, 0.15);
+    const lx = landX(u) + clamp(p.vx * 0.05, -0.05, 0.05);
     const ex = lx - b.x, ey = b.bounceY - b.y, len = Math.hypot(ex, ey);
     b.vx = speed * ex / len;
     b.vy = speed * ey / len;
@@ -181,22 +198,28 @@ export function sweep(x: number, y: number, dx: number, dy: number, h: number, r
   let best = -1;
   // The flat sides: y = +r or -r, with |x| <= h at that moment.
   if (dy !== 0) {
-    for (const edge of [r, -r]) {
-      const t = (edge - y) / dy;
-      if (t >= 0 && t <= 1 && Math.abs(x + dx * t) <= h && (best < 0 || t < best)) best = t;
-    }
+    best = side(x, y, dx, dy, h, r, best);
+    best = side(x, y, dx, dy, h, -r, best);
   }
   // The round ends: circles of radius r at (+h, 0) and (-h, 0).
-  for (const cx of [h, -h]) {
-    const ox = x - cx, a = dx * dx + dy * dy;
-    if (a === 0) continue;
-    const bq = ox * dx + y * dy, c = ox * ox + y * y - r * r;
-    const disc = bq * bq - a * c;
-    if (disc < 0) continue;
-    const t = (-bq - Math.sqrt(disc)) / a;
-    if (t >= 0 && t <= 1 && (best < 0 || t < best)) best = t;
-  }
+  best = cap(x - h, y, dx, dy, r, best);
+  best = cap(x + h, y, dx, dy, r, best);
   return best;
+}
+
+function side(x: number, y: number, dx: number, dy: number, h: number, edge: number, best: number) {
+  const t = (edge - y) / dy;
+  return t >= 0 && t <= 1 && Math.abs(x + dx * t) <= h && (best < 0 || t < best) ? t : best;
+}
+
+function cap(ox: number, y: number, dx: number, dy: number, r: number, best: number) {
+  const a = dx * dx + dy * dy;
+  if (a === 0) return best;
+  const bq = ox * dx + y * dy, c = ox * ox + y * y - r * r;
+  const disc = bq * bq - a * c;
+  if (disc < 0) return best;
+  const t = (-bq - Math.sqrt(disc)) / a;
+  return t >= 0 && t <= 1 && (best < 0 || t < best) ? t : best;
 }
 
 function dist2Seg(x: number, y: number, h: number) {
@@ -232,6 +255,20 @@ export function step(s: State, out: Event[]) {
   b.curve *= SPIN_DECAY;
   const dx = b.vx * TICK, dy = b.vy * TICK;
 
+  // Landing comes first: a ball that comes down inside this tick does so before any paddle
+  // can reach it, and a wide one is called even if it would have touched a paddle after.
+  if (s.mode === 'match' && !b.bounced) {
+    const f = (b.bounceY - y0) / dy;
+    if (f >= 0 && f <= 1) {
+      const lx = x0 + dx * f;
+      b.bounced = true;
+      if (Math.abs(lx) > HALF_W) { b.x = lx; b.y = b.bounceY; end(s, (1 - s.lastHit) as Side, 'wide', out); return; }
+      out.push({ t: 'bounce', x: lx, y: b.bounceY, speed: Math.hypot(b.vx, b.vy) });
+      // Second arc, up off the table and down again past the far end.
+      arc(b, Math.abs((HALF_L + 0.9) / b.vy) * 1.1, 0.16 * START_SPEED / Math.abs(b.vy) + 0.03);
+    }
+  }
+
   // Paddles. Only the one the ball is heading for can hit it, so a ball that has just been
   // struck can't be struck again on its way out.
   const side: Side = b.vy < 0 ? 0 : 1;
@@ -243,7 +280,8 @@ export function step(s: State, out: Event[]) {
       b.x = x0 + dx * t;
       b.y = y0 + dy * t;
       const padX = p.px + (p.x - p.px) * t;
-      const u = clamp((b.x - padX) / PAD_HALF, -1, 1);
+      // -1 at one rounded tip, +1 at the other, over the whole width that can touch the ball.
+      const u = clamp((b.x - padX) / CONTACT, -1, 1);
       strike(s, side, u);
       out.push({ t: 'hit', side, speed: Math.hypot(b.vx, b.vy), u, x: b.x });
       // Spend the rest of the tick on the new heading, so the ball leaves the paddle cleanly.
@@ -256,21 +294,9 @@ export function step(s: State, out: Event[]) {
   }
 
   if (s.mode === 'solo') { stepWalls(s, out); return; }
-  {
-    b.x += dx; b.y += dy;
-    // Landing. Crossing bounceY is where the ball comes down; off the side of the table is wide.
-    if (!b.bounced && (b.vy > 0 ? b.y >= b.bounceY : b.y <= b.bounceY)) {
-      const f = (b.bounceY - y0) / dy;
-      const lx = x0 + dx * f;
-      b.bounced = true;
-      if (Math.abs(lx) > HALF_W) { end(s, (1 - s.lastHit) as Side, 'wide', out); return; }
-      out.push({ t: 'bounce', x: lx, y: b.bounceY, speed: Math.hypot(b.vx, b.vy) });
-      // Second arc, up off the table and down again past the far end.
-      arc(b, Math.abs((HALF_L + 0.9) / b.vy) * 1.1, 0.16 * START_SPEED / Math.abs(b.vy) + 0.03);
-    }
-    // Past the receiver: the point goes to whoever hit it.
-    if (Math.abs(b.y) > HALF_L + 0.9 || Math.abs(b.x) > 2.4) end(s, s.lastHit, 'missed', out);
-  }
+  b.x += dx; b.y += dy;
+  // Past the receiver: the point goes to whoever hit it.
+  if (Math.abs(b.y) > HALF_L + 0.9 || Math.abs(b.x) > 2.4) { end(s, s.lastHit, 'missed', out); return; }
   b.arcAge += TICK;
   const f = b.arcT > 0 ? Math.min(b.arcAge / b.arcT, 1.6) : 0;
   b.z = Math.max(-0.76, b.z0 * (1 - f) + 4 * b.arcH * f * (1 - f));
