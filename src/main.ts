@@ -163,6 +163,8 @@ function targetAt(t: number) {
 function onMove(e: PointerEvent) {
   if (screen !== 'play') return;
   if (e.pointerType === 'mouse' ? input.down && e.pointerId !== input.id : e.pointerId !== input.id) return;
+  // A mouse after a touch on the same device steers directly, not with the finger's offset.
+  if (e.pointerType === 'mouse' && input.touch && !input.down) { input.touch = false; input.offX = input.offY = 0; }
   const list = e.getCoalescedEvents?.() ?? [];
   for (const c of list.length ? list : [e]) addSample(c.timeStamp, c.clientX, c.clientY);
   input.lastX = e.clientX; input.lastY = e.clientY;
@@ -187,8 +189,6 @@ canvas.addEventListener('pointerup', (e) => {
   if (input.moved < 14 && e.timeStamp - input.downAt < 400) playerServe();
 });
 canvas.addEventListener('pointercancel', (e) => { if (e.pointerId === input.id) { input.down = false; input.id = -1; } });
-// The mouse steers without a button held, so remember which pointer it is.
-canvas.addEventListener('pointerover', (e) => { if (e.pointerType === 'mouse' && !input.down) input.id = e.pointerId; });
 
 function playerServe() {
   if (screen !== 'play' || replay || pendingEnd || s.live || between > 0) return;
@@ -345,7 +345,7 @@ function frame(now: number) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
-  if (!cam) return;
+  if (needLayout) { needLayout = false; layout(); }
 
   if (replay) {
     // Slow motion over the last couple of seconds before the end. Pausing holds it.
@@ -494,9 +494,15 @@ for (const d of [el.paused, el.over]) {
   d.addEventListener('cancel', (e) => { e.preventDefault(); if (d.id === 'paused') resume(); else menu(); });
 }
 
-// Resize fires many times during a drag or rotation; lay out at most once a frame.
-let resizeQueued = false;
-addEventListener('resize', () => { if (!resizeQueued) { resizeQueued = true; requestAnimationFrame(() => { resizeQueued = false; layout(); }); } });
+// Resize fires many times during a drag or rotation, so it only sets a flag; frame() lays out
+// before it draws. (Laying out in a later rAF callback would clear the canvas after the draw.)
+let needLayout = false;
+addEventListener('resize', () => { needLayout = true; });
+// Moving the window to a screen with a different pixel density fires no resize.
+function watchDpr() {
+  matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener('change', () => { needLayout = true; watchDpr(); }, { once: true });
+}
+watchDpr();
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { pause(); sfx.sleep(); } else if (screen === 'home') sfx.wake();
 });

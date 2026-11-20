@@ -91,8 +91,11 @@ function layer(c: Cam, old: Layer | null | undefined, x = 0, y = 0, w = c.w, h =
   const cv = old?.cv ?? document.createElement('canvas');
   cv.width = Math.max(1, Math.ceil(w * c.dpr)); cv.height = Math.max(1, Math.ceil(h * c.dpr));
   const g = cv.getContext('2d')!;
-  g.setTransform(c.dpr, 0, 0, c.dpr, -x * c.dpr, -y * c.dpr);
-  return { L: { cv, x: Math.floor(x * c.dpr), y: Math.floor(y * c.dpr) }, g };
+  // Snap the corner to a whole device pixel and translate by exactly that, so the layer lands
+  // where it would have in a full-screen canvas.
+  const lx = Math.floor(x * c.dpr), ly = Math.floor(y * c.dpr);
+  g.setTransform(c.dpr, 0, 0, c.dpr, -lx, -ly);
+  return { L: { cv, x: lx, y: ly }, g };
 }
 
 // Floor, table and lines. Everything here sits on or below the table top.
