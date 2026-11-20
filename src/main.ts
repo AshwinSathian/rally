@@ -2,6 +2,7 @@ import './style.css';
 import { TICK, create, movePad, nextPoint, serve, winner, step, HALF_W, type Event, type Mode, type Side, type State } from './sim.ts';
 import { Bot, LEVELS } from './ai.ts';
 import { camera, drawFrame, paintBase, paintNet, unproject, type Cam, type Frame, type Fx, type Layer } from './view.ts';
+import { courtFit, courtToWorld, courtWidthFor, drawCourt, paintCourt, type Court } from './court.ts';
 import * as sfx from './audio.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -57,24 +58,39 @@ let replay: { t0: number; t1: number; at: number } | null = null;
 const auto = new URLSearchParams(location.search).get('autoplay');
 const autoplay = auto === null ? null : new Bot(0, LEVELS[auto !== '' && Number(auto) in LEVELS ? Number(auto) : 2], 99);
 
-let cam: Cam;
+let cam: Cam; // the table, for a match
+let court: Court; // the court seen from above, for Solo
 let base: Layer, net: Layer | null;
 let layoutKey = '';
+
+// Room kept clear at the top for the HUD. In Solo on a landscape screen the score sits to the
+// side of the court instead, so the court gets the full height.
+function hudTop(w: number, h: number, scr: Screen = screen, m: Mode = mode) {
+  if (scr === 'home') return 24;
+  if (m === 'solo') return w > h ? 16 : 92;
+  return 64;
+}
 
 function layout() {
   const dpr = Math.min(devicePixelRatio || 1, 2);
   const w = innerWidth, h = innerHeight;
-  const top = screen === 'home' ? 24 : mode === 'solo' ? 92 : 64;
+  const top = hudTop(w, h);
   // On wide screens the menu takes the left side, so the table moves over to make room.
   const left = screen === 'home' && w >= 900 && w >= h ? Math.min(520, w * 0.36) : 0;
   // Pausing and resuming change nothing here; only bake again when the picture would change.
-  const key = [w, h, dpr, mode, top, left].join();
+  const key = [w, h, dpr, mode, top, left, s.halfW].join();
   if (key === layoutKey) return;
   layoutKey = key;
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
-  cam = camera(w, h, dpr, mode, top, left);
-  base = paintBase(cam, mode, base);
-  net = paintNet(cam, mode, net);
+  if (mode === 'solo') {
+    court = courtFit(w, h, dpr, top, s.halfW);
+    base = paintCourt(court, base);
+    net = null;
+  } else {
+    cam = camera(w, h, dpr, mode, top, left);
+    base = paintBase(cam, mode, base);
+    net = paintNet(cam, mode, net);
+  }
   // A finger that's down keeps the paddle where it is under the new camera.
   if (input.down && input.touch) setTouchOffset(input.lastX, input.lastY);
 }
@@ -92,7 +108,8 @@ function attract() {
 function start(m: Mode) {
   mode = m;
   document.body.dataset.mode = m;
-  s = create(m, (Math.random() * 1e9) | 0);
+  // A Solo court is as wide as this screen suits, fixed for the game even if the window changes.
+  s = create(m, (Math.random() * 1e9) | 0, m === 'solo' ? courtWidthFor(innerWidth, innerHeight, hudTop(innerWidth, innerHeight, 'play', 'solo')) : undefined);
   firstServer = m === 'solo' ? 0 : (games++ % 2) as Side;
   s.server = firstServer;
   if (m === 'match') {
@@ -134,15 +151,18 @@ const input = {
   keys: new Set<string>(), kx: 0, ky: 0, usingKeys: false,
 };
 
+// Screen to world: onto the paddle's plane at the table, or straight down onto the court.
+const toWorld = (sx: number, sy: number) => (mode === 'solo' ? courtToWorld(court, sx, sy) : unproject(cam, sx, sy));
+
 function setTouchOffset(sx: number, sy: number) {
   // Touch moves the paddle by however far the finger moves, so the finger never covers it.
-  const p = unproject(cam, sx, sy);
+  const p = toWorld(sx, sy);
   input.offX = s.pads[0].x - p.x; input.offY = s.pads[0].y - p.y;
   input.samples.length = 0;
 }
 
 function addSample(t: number, sx: number, sy: number) {
-  const p = unproject(cam, sx, sy);
+  const p = toWorld(sx, sy);
   const smp = input.samples;
   smp.push({ t, x: p.x + input.offX, y: p.y + input.offY });
   if (smp.length > 96) smp.splice(0, smp.length - 64);
@@ -351,7 +371,7 @@ function frame(now: number) {
     // Slow motion over the last couple of seconds before the end. Pausing holds it.
     if (screen === 'play') replay.at += dt * 1000 * 0.4;
     const f = replayFrame(replay.t0 + replay.at);
-    if (f) drawFrame(g, cam, mode, base, net, f, [], now / 1000);
+    if (f) draw(f, [], now / 1000);
     if (replay.t0 + replay.at >= replay.t1) { replay = null; showOver(); }
     return;
   }
@@ -386,8 +406,13 @@ function frame(now: number) {
     history.push({ t: now, f });
     while (history.length && history[0].t < now - 2600) history.shift();
   }
-  drawFrame(g, cam, mode, base, net, f, fx, now / 1000);
+  draw(f, fx, now / 1000);
   prompt();
+}
+
+function draw(f: Frame, effects: Fx[], t: number) {
+  if (mode === 'solo') drawCourt(g, court, base, f, effects, t);
+  else drawFrame(g, cam, mode, base, net, f, effects, t);
 }
 
 let promptText = '';

@@ -13,6 +13,10 @@ export const PAD_R = 0.02; // thickness of that edge, as a capsule radius
 const REACH = HALF_W + 0.22; // how far out to either side a player can stand
 const HIT_R = BALL_R + PAD_R;
 export const CONTACT = PAD_HALF + HIT_R; // from the paddle's centre to the furthest contact
+// Solo is a court seen from above: walls on three sides and the floor along the bottom, a
+// little below the paddle. A ball that touches the floor ends the game.
+export const SOLO_FLOOR = -HALF_L - 0.55;
+export const TARGET_HALF = 0.16; // half the width of the lit patch on the top wall
 const MAX_ANGLE = 0.4; // solo: radians off straight at the paddle's tip (about 23 degrees)
 export const LAND_REACH = HALF_W * 1.136; // match: where a hit off the paddle's very tip lands
 const START_SPEED = 3.3;
@@ -62,6 +66,7 @@ export interface State {
   // solo
   points: number;
   target: number; // centre x of the lit patch on the far wall
+  halfW: number; // solo: half the court's width; it's wider on wide screens
   seed: number;
 }
 
@@ -70,7 +75,8 @@ export interface State {
 export function zone(side: Side, mode: Mode) { return ZONES[mode][side]; }
 const ZONES = { match: [makeZone(0, 'match'), makeZone(1, 'match')], solo: [makeZone(0, 'solo'), makeZone(1, 'solo')] };
 function makeZone(side: Side, mode: Mode) {
-  if (mode === 'solo') return { x0: -HALF_W + 0.05, x1: HALF_W - 0.05, y0: -HALF_L - 0.45, y1: -HALF_L + 0.25 };
+  // The paddle mostly slides sideways; a short band forward lets a push add pace.
+  if (mode === 'solo') return { x0: -HALF_W + 0.05, x1: HALF_W - 0.05, y0: SOLO_FLOOR + 0.14, y1: SOLO_FLOOR + 0.45 };
   const y0 = HALF_L - 0.12, y1 = HALF_L + 0.55;
   return side === 0
     ? { x0: -REACH, x1: REACH, y0: -y1, y1: -y0 }
@@ -87,13 +93,17 @@ export function rand(s: State) {
 
 function pad(y: number): Paddle { return { x: 0, y, px: 0, py: y, vx: 0, vy: 0 }; }
 
-export function create(mode: Mode, seed = 1): State {
+// Solo courts run from the table's width (portrait) up to MAX_SOLO_HALF_W * 2 (landscape).
+export const MAX_SOLO_HALF_W = 1.4;
+
+export function create(mode: Mode, seed = 1, halfW = HALF_W): State {
   const s: State = {
     mode, live: false, lastHit: 0, hits: 0, score: [0, 0], server: 0, points: 0, target: 0, seed,
+    halfW: clamp(halfW, HALF_W, MAX_SOLO_HALF_W),
     ball: { x: 0, y: 0, vx: 0, vy: 0, curve: 0, z: 0, z0: 0, arcAge: 0, arcT: 0, arcH: 0, bounceY: 0, bounced: false },
     pads: [pad(-HALF_L - 0.2), pad(HALF_L + 0.2)],
   };
-  if (mode === 'solo') { s.pads[1].y = 99; s.target = (rand(s) - 0.5) * (TABLE_W - 0.4); }
+  if (mode === 'solo') { s.pads[1].y = 99; s.target = (rand(s) - 0.5) * (2 * s.halfW - 0.4); }
   holdBall(s);
   return s;
 }
@@ -135,7 +145,8 @@ export function serve(s: State, out?: Event[], u?: number) {
   const side: Side = s.mode === 'solo' ? 0 : s.server;
   const p = s.pads[side];
   // A serve from outside the table's width would be out before it started.
-  p.x = Math.max(-HALF_W + 0.12, Math.min(HALF_W - 0.12, p.x));
+  const edge = (s.mode === 'solo' ? s.halfW : HALF_W) - 0.12;
+  p.x = Math.max(-edge, Math.min(edge, p.x));
   s.ball.x = p.x;
   const aim = u ?? clamp(p.x / HALF_W * 0.7 + p.vx * 0.25, -0.7, 0.7);
   strike(s, side, s.mode === 'solo' ? 0 : aim);
@@ -234,7 +245,8 @@ function dist2Seg(x: number, y: number, h: number) {
 export function movePad(s: State, side: Side, tx: number, ty: number) {
   const p = s.pads[side], z = zone(side, s.mode);
   p.px = p.x; p.py = p.y;
-  p.x = clamp(tx, z.x0, z.x1);
+  const xMax = s.mode === 'solo' ? s.halfW - 0.05 : z.x1;
+  p.x = clamp(tx, -xMax, xMax);
   p.y = clamp(ty, z.y0, z.y1);
   const k = 0.13;
   p.vx += ((p.x - p.px) / TICK - p.vx) * k;
@@ -306,11 +318,11 @@ function arc(b: Ball, t: number, h: number) {
   b.z0 = b.z; b.arcAge = 0; b.arcT = t; b.arcH = h;
 }
 
-// Solo: the far end and both sides are walls. Bounces are solved in time order inside the
+// Solo: the top and both sides are walls. Bounces are solved in time order inside the
 // tick, so a fast ball into a corner leaves it after two exact reflections.
 function stepWalls(s: State, out: Event[]) {
   const b = s.ball;
-  const xm = HALF_W - BALL_R, ym = HALF_L - BALL_R;
+  const xm = s.halfW - BALL_R, ym = HALF_L - BALL_R;
   let left = TICK;
   for (let guard = 0; guard < 4; guard++) {
     const tx = b.vx > 0 ? (xm - b.x) / b.vx : b.vx < 0 ? (-xm - b.x) / b.vx : Infinity;
@@ -326,19 +338,19 @@ function stepWalls(s: State, out: Event[]) {
       out.push({ t: 'wall', x: b.x, y: b.y, speed, target: false });
     } else {
       b.vy = -b.vy;
-      const onTarget = Math.abs(b.x - s.target) <= 0.16;
+      const onTarget = Math.abs(b.x - s.target) <= TARGET_HALF;
       if (onTarget) { s.points += 2; s.target = pickTarget(s); }
       out.push({ t: 'wall', x: b.x, y: b.y, speed, target: onTarget });
     }
   }
   b.x = clamp(b.x, -xm, xm);
-  if (b.y < -HALF_L - 0.9) { s.live = false; out.push({ t: 'out' }); }
+  if (b.y - BALL_R <= SOLO_FLOOR) { b.y = SOLO_FLOOR + BALL_R; s.live = false; out.push({ t: 'out' }); }
 }
 
 function pickTarget(s: State) {
   // Somewhere new, at least 0.3 m from the old spot.
   for (;;) {
-    const x = (rand(s) - 0.5) * (TABLE_W - 0.4);
+    const x = (rand(s) - 0.5) * (2 * s.halfW - 0.4);
     if (Math.abs(x - s.target) > 0.3) return x;
   }
 }

@@ -13,7 +13,6 @@ export interface Cam {
 const PAD_Z = 0.13; // paddle face centre height; the input plane
 const NET_H = 0.1525;
 const TABLE_T = 0.03; // table top thickness, for the edge you see on the near side
-const WALL_H = 0.5;
 
 export const C = {
   bg0: '#0B1220', bg1: '#14213A', floor: '#101a2e',
@@ -21,7 +20,6 @@ export const C = {
   net: 'rgba(12,18,30,0.55)', tape: '#F4F7FB',
   ball: '#FF8A2A', ballHi: '#FFD2A6',
   you: '#E5484D', youRim: '#FF9A9D', them: '#4A5160', themRim: '#D9B27C',
-  wall: '#173F75', patch: '#FFB224',
 };
 
 const sub = (a: V3, b: V3): V3 => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
@@ -43,7 +41,7 @@ export function camera(w: number, h: number, dpr: number, mode: Mode, top: numbe
   const pts: V3[] = [];
   const z0 = zone(0, mode), z1 = zone(1, mode);
   for (const z of mode === 'solo' ? [z0] : [z0, z1]) for (const x of [z.x0 - 0.1, z.x1 + 0.1]) for (const y of [z.y0, Math.sign(z.y1) * Math.min(Math.abs(z.y1), HALF_L + 0.42)]) for (const zz of [PAD_Z + 0.09, PAD_Z - 0.18]) pts.push({ x, y, z: zz });
-  for (const x of [-HALF_W, HALF_W]) for (const y of [-HALF_L, HALF_L]) pts.push({ x, y, z: mode === 'solo' && y > 0 ? WALL_H : 0 });
+  for (const x of [-HALF_W, HALF_W]) for (const y of [-HALF_L, HALF_L]) pts.push({ x, y, z: 0 });
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const p of pts) {
     const d = sub(p, eye), cz = dot(d, f);
@@ -139,22 +137,10 @@ export function paintBase(c: Cam, mode: Mode, old?: Layer) {
   strip(HALF_W - lw, -HALF_L, HALF_W, HALF_L);
   strip(-HALF_W, -HALF_L, HALF_W, -HALF_L + lw);
   if (mode === 'match') { strip(-HALF_W, HALF_L - lw, HALF_W, HALF_L); strip(-0.0015, -HALF_L, 0.0015, HALF_L); }
-  // Solo: the side rails, painted here since nothing ever passes outside them.
-  if (mode === 'solo') {
-    for (const sx of [-1, 1]) {
-      g.fillStyle = C.wall;
-      poly(g, c, [[sx * HALF_W, -HALF_L, 0], [sx * HALF_W, HALF_L, 0], [sx * HALF_W, HALF_L, 0.09], [sx * HALF_W, -HALF_L, 0.09]]);
-      g.fill();
-      g.fillStyle = 'rgba(244,247,251,0.75)';
-      poly(g, c, [[sx * HALF_W, -HALF_L, 0.09], [sx * HALF_W, HALF_L, 0.09], [sx * HALF_W, HALF_L, 0.084], [sx * HALF_W, -HALF_L, 0.084]]);
-      g.fill();
-    }
-  }
   return L;
 }
 
-// The net, baked into a canvas only as big as the net itself. Solo has no net (its back wall
-// is drawn each frame so the lit patch can move).
+// The net, baked into a canvas only as big as the net itself. (Solo has its own view, court.ts.)
 export function paintNet(c: Cam, mode: Mode, old?: Layer | null): Layer | null {
   if (mode === 'solo') return null;
   const o = 0.1525; // posts stand 15.25 cm out from the sides
@@ -208,41 +194,10 @@ export function drawFrame(g: CanvasRenderingContext2D, c: Cam, mode: Mode, base:
   if (mode === 'match') {
     items.push({ y: f.pads[1].y, draw: () => drawPad(g, c, f.pads[1].x, f.pads[1].y, 1, fx) });
     if (net) items.push({ y: 0, draw: () => { g.setTransform(1, 0, 0, 1, 0, 0); g.drawImage(net.cv, net.x, net.y); g.setTransform(c.dpr, 0, 0, c.dpr, 0, 0); } });
-  } else {
-    items.push({ y: HALF_L + 0.01, draw: () => drawWall(g, c, f.target, fx, t) });
   }
   for (const e of fx) if (e.kind === 'ring') items.push({ y: e.y + 0.002, draw: () => drawRing(g, c, e) });
   items.sort((p, q) => q.y - p.y);
   for (const it of items) it.draw();
-}
-
-function drawWall(g: CanvasRenderingContext2D, c: Cam, target: number, fx: Fx[], t: number) {
-  g.fillStyle = C.wall;
-  poly(g, c, [[-HALF_W, HALF_L, 0], [HALF_W, HALF_L, 0], [HALF_W, HALF_L, WALL_H], [-HALF_W, HALF_L, WALL_H]]);
-  g.fill();
-  // The lit patch breathes a little so it reads as a thing to aim at.
-  const pulse = 0.82 + 0.18 * Math.sin(t * 4);
-  g.fillStyle = C.patch;
-  g.globalAlpha = pulse;
-  g.shadowColor = 'rgba(255,178,36,0.8)';
-  g.shadowBlur = 18;
-  poly(g, c, [[target - 0.16, HALF_L - 0.001, 0.03], [target + 0.16, HALF_L - 0.001, 0.03], [target + 0.16, HALF_L - 0.001, 0.26], [target - 0.16, HALF_L - 0.001, 0.26]]);
-  g.fill();
-  g.shadowBlur = 0;
-  g.globalAlpha = 1;
-  for (const e of fx) {
-    if (e.kind !== 'wall') continue;
-    const k = 1 - e.age / e.life;
-    const p = project(c, e.x, HALF_L - 0.002, 0.1);
-    const rg = g.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.s * (0.12 + 0.25 * (1 - k)));
-    const col = e.gold ? '255,210,120' : '200,220,255';
-    rg.addColorStop(0, `rgba(${col},${0.7 * k})`); rg.addColorStop(1, `rgba(${col},0)`);
-    g.fillStyle = rg;
-    g.fillRect(p.x - p.s, p.y - p.s, p.s * 2, p.s * 2);
-  }
-  g.fillStyle = 'rgba(244,247,251,0.8)';
-  poly(g, c, [[-HALF_W, HALF_L, WALL_H], [HALF_W, HALF_L, WALL_H], [HALF_W, HALF_L, WALL_H - 0.008], [-HALF_W, HALF_L, WALL_H - 0.008]]);
-  g.fill();
 }
 
 function drawRing(g: CanvasRenderingContext2D, c: Cam, e: Fx) {
