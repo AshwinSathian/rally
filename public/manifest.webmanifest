@@ -1,7 +1,7 @@
 {
   "name": "Rally",
   "short_name": "Rally",
-  "description": "Table tennis in the browser: a solo wall game and matches against the computer.",
+  "description": "A classic single-paddle court and table tennis matches against the computer.",
   "start_url": "/",
   "display": "fullscreen",
   "orientation": "any",

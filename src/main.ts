@@ -303,7 +303,7 @@ function handle(e: Event, t: number) {
     fx.push({ kind: 'ring', x: e.x, y: e.y, age: 0, life: 0.35 });
   } else if (e.t === 'wall') {
     if (e.target) { sfx.patch(e.x / HALF_W * 0.6); stats.patches++; hud(); } else sfx.wall(e.speed, e.x / HALF_W * 0.6);
-    fx.push({ kind: 'wall', x: e.x, y: e.y, age: 0, life: e.target ? 0.5 : 0.25, gold: e.target });
+    fx.push({ kind: 'wall', x: e.x, y: e.y, age: 0, life: e.target ? 0.5 : 0.25, gold: e.target, top: e.top });
   } else if (e.t === 'point') {
     s.live = false;
     between = 1.25;
@@ -319,6 +319,8 @@ function handle(e: Event, t: number) {
     hud(false, e.winner);
     if (winner(s.score) >= 0) pendingEnd = true;
   } else if (e.t === 'out') {
+    // The ball stops where it touched the floor.
+    s.ball.vx = s.ball.vy = 0;
     sfx.miss();
     between = 1;
     if (screen === 'play') pendingEnd = true;

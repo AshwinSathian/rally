@@ -5,7 +5,7 @@
 <h1 align="center">Rally</h1>
 
 <p align="center">
-  Table tennis in the browser: a solo game against a wall, and matches to eleven against a computer opponent that reads the ball the way a person does.
+  A paddle game in the browser: a classic single-paddle court seen from above, and table tennis matches to eleven against a computer opponent that reads the ball the way a person does.
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
 
 **Match.** First to 11, win by two. Service changes every two points, and every point from 10–10. The opponent comes in three levels, Casual, Club and Pro, and your record against each is kept on the device. A shot that lands off the side of the table loses the point; so does a ball you can't reach.
 
-**Solo.** The far end of the table is a wall and the sides have rails. Keep the ball off the floor. Every return is a point, and hitting the lit patch on the wall is worth two more, after which it moves. The ball speeds up with each return.
+**Solo.** The classic one-paddle game, seen from straight above: walls on three sides, the floor along the bottom, and your paddle just above it. Keep the ball off the floor. Every return scores 1, and hitting the lit stretch of the top wall scores 3 and moves it. The ball speeds up with each return, and where it meets your paddle sets its angle, up to 23° off straight. The court is as wide as your screen suits, from 1.5 m on a phone held upright to 2.8 m on a wide screen, and keeps that width for the whole game.
 
 The last two seconds of a game play back in slow motion before the result.
 
@@ -89,7 +89,7 @@ The human model's parameters are estimates, not measurements, and each cell can 
 
 **Input.** Pointer events carry their own timestamps, and `getCoalescedEvents()` returns the samples the browser merged between frames. Each 240 Hz tick moves your paddle to where your finger was at that tick's time, interpolated between samples, so the speed and direction of a swing don't depend on the display's frame rate. Chromium's `pointerrawupdate` is used where it exists, and the canvas asks for a `desynchronized` context to cut a frame of latency where the browser allows.
 
-**Drawing** (`src/view.ts`) is Canvas 2D through a pinhole camera behind your end of the table. The camera is fitted to the screen on every resize: high and steep on a tall phone, where the far half needs the room, and low on a wide screen. The same camera inverted maps a pointer onto the paddle's plane. The floor, table and net never move, so they are painted once per resize into offscreen canvases; each frame draws those two images and the moving pieces, sorted far to near with the net slotted in between. Frames are interpolated between ticks.
+**Drawing** is Canvas 2D in two views. Solo (`src/court.ts`) is an orthographic court fitted below the score, or beside it in landscape. Matches (`src/view.ts`) go through a pinhole camera behind your end of the table. The camera is fitted to the screen on every resize: high and steep on a tall phone, where the far half needs the room, and low on a wide screen. The same camera inverted maps a pointer onto the paddle's plane. The floor, table and net never move, so they are painted into offscreen canvases (the net into one only as big as the net) and painted again only when the screen size changes; each frame draws those images and the moving pieces, sorted far to near with the net slotted in between. Frames are interpolated between ticks.
 
 **Speed.** On a phone viewport with the CPU slowed 4× and 150 ms of network latency, first paint is at about 320 ms, and a rally runs at 60 frames a second with no frame over 17 ms (`scripts/perf.ts`).
 

@@ -1,7 +1,7 @@
 // The opponent. It reads the ball the way a person does: late, roughly at first, better as the
 // ball gets closer, and it can only move so fast. Its prediction uses the game's own ball
 // physics, so when it misses it is because of those limits, never a dice roll that says "miss".
-import { CONTACT, HALF_L, HALF_W, SPIN_DECAY, TICK, aimFor, clamp, movePad, serve, zone, type Ball, type Event, type Side, type State } from './sim.ts';
+import { CONTACT, HALF_L, HALF_W, SPIN_DECAY, TICK, aimFor, clamp, movePad, padXMax, serve, zone, type Ball, type Event, type Side, type State } from './sim.ts';
 
 export interface Level {
   name: string;
@@ -125,8 +125,8 @@ export class Bot {
   // Accelerate toward the target, braking in time to stop on it: a speed limit and an
   // acceleration limit, which is what makes a far ball unreachable.
   private drive(s: State, tx: number, ty: number) {
-    const L = this.level, p = s.pads[this.side], z = zone(this.side, s.mode);
-    tx = clamp(tx, z.x0, z.x1); ty = clamp(ty, z.y0, z.y1);
+    const L = this.level, p = s.pads[this.side], z = zone(this.side, s.mode), xm = padXMax(s, this.side);
+    tx = clamp(tx, -xm, xm); ty = clamp(ty, z.y0, z.y1);
     const want = (d: number, v: number, vmax: number) => {
       const stop = Math.sqrt(2 * L.amax * Math.abs(d)) * Math.sign(d);
       const goal = clamp(stop, -vmax, vmax);

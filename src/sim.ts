@@ -49,7 +49,7 @@ export interface Ball {
 export type Event =
   | { t: 'hit'; side: Side; speed: number; u: number; x: number }
   | { t: 'bounce'; x: number; y: number; speed: number }
-  | { t: 'wall'; x: number; y: number; speed: number; target: boolean }
+  | { t: 'wall'; x: number; y: number; speed: number; target: boolean; top: boolean }
   | { t: 'point'; winner: Side; why: 'wide' | 'missed' }
   | { t: 'out' }; // solo: the ball got past the paddle
 
@@ -242,10 +242,15 @@ function dist2Seg(x: number, y: number, h: number) {
 
 // Move a paddle toward where its controller wants it, inside its zone. Velocity is smoothed over
 // about 30 ms so one jittery pointer sample can't turn into a smash.
+// How far either way a paddle's centre may go. In Solo the paddle stops flush with the side
+// wall, which still lets it reach a ball touching that wall.
+export function padXMax(s: State, side: Side) {
+  return s.mode === 'solo' ? s.halfW - (CONTACT - BALL_R) : zone(side, s.mode).x1;
+}
+
 export function movePad(s: State, side: Side, tx: number, ty: number) {
-  const p = s.pads[side], z = zone(side, s.mode);
+  const p = s.pads[side], z = zone(side, s.mode), xMax = padXMax(s, side);
   p.px = p.x; p.py = p.y;
-  const xMax = s.mode === 'solo' ? s.halfW - 0.05 : z.x1;
   p.x = clamp(tx, -xMax, xMax);
   p.y = clamp(ty, z.y0, z.y1);
   const k = 0.13;
@@ -335,12 +340,12 @@ function stepWalls(s: State, out: Event[]) {
     if (tx <= ty) {
       b.vx = -b.vx;
       b.curve = -b.curve * 0.5;
-      out.push({ t: 'wall', x: b.x, y: b.y, speed, target: false });
+      out.push({ t: 'wall', x: b.x, y: b.y, speed, target: false, top: false });
     } else {
       b.vy = -b.vy;
       const onTarget = Math.abs(b.x - s.target) <= TARGET_HALF;
       if (onTarget) { s.points += 2; s.target = pickTarget(s); }
-      out.push({ t: 'wall', x: b.x, y: b.y, speed, target: onTarget });
+      out.push({ t: 'wall', x: b.x, y: b.y, speed, target: onTarget, top: true });
     }
   }
   b.x = clamp(b.x, -xm, xm);

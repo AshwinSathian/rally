@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { aimFor, create, landX, movePad, nextPoint, serve, serverFor, step, sweep, winner, HALF_L, HALF_W, BALL_R, PAD_HALF, PAD_R, SOLO_FLOOR, type Event, type State } from './sim.ts';
+import { aimFor, create, landX, movePad, nextPoint, serve, serverFor, step, sweep, winner, HALF_L, HALF_W, BALL_R, CONTACT, PAD_HALF, PAD_R, SOLO_FLOOR, type Event, type State } from './sim.ts';
 import { Bot, LEVELS, predict } from './ai.ts';
 
 // Reference for sweep(): walk the step in a million tiny pieces and report the first overlap.
@@ -180,4 +180,15 @@ test('solo: a wide court keeps the ball and the paddle inside its own walls', ()
   let maxX = 0;
   for (let i = 0; i < 240 * 5 && s.live; i++) { step(s, ev); maxX = Math.max(maxX, Math.abs(s.ball.x)); }
   assert.ok(maxX <= 1.4 - BALL_R + 1e-9 && maxX > 1.3, `max |x| ${maxX}`);
+});
+
+test('solo: a paddle stopped flush with the wall still returns a ball running down that wall', () => {
+  const s = create('solo', 9, 1.4);
+  s.live = true;
+  movePad(s, 0, 99, s.pads[0].y); movePad(s, 0, 99, s.pads[0].y);
+  assert.ok(Math.abs(s.pads[0].x + CONTACT - BALL_R - 1.4) < 1e-9, 'paddle edge flush with the wall');
+  Object.assign(s.ball, { x: 1.4 - BALL_R, y: s.pads[0].y + 0.3, vx: 0, vy: -5, curve: 0 });
+  const ev: Event[] = [];
+  for (let i = 0; i < 240 && !ev.length; i++) step(s, ev);
+  assert.equal(ev[0]?.t, 'hit');
 });

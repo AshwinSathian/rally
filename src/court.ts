@@ -106,7 +106,7 @@ export function drawCourt(g: CanvasRenderingContext2D, c: Court, base: Layer, f:
   for (const e of fx) {
     if (e.kind !== 'wall') continue;
     const k = 1 - e.age / e.life;
-    const top = e.y > HALF_L - 0.1;
+    const top = !!e.top;
     const px = top ? X(c, e.x) : X(c, Math.sign(e.x) * (HW(c) + WALL / 2));
     const py = top ? yt - th / 2 : Y(c, e.y);
     const r = (0.12 + 0.2 * (1 - k)) * c.s;

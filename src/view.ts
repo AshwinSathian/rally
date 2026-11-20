@@ -173,7 +173,7 @@ export function paintNet(c: Cam, mode: Mode, old?: Layer | null): Layer | null {
   return L;
 }
 
-export interface Fx { kind: 'ring' | 'flash' | 'wall'; x: number; y: number; age: number; life: number; side?: number; gold?: boolean }
+export interface Fx { kind: 'ring' | 'flash' | 'wall'; x: number; y: number; age: number; life: number; side?: number; gold?: boolean; top?: boolean }
 
 export interface Frame {
   ball: { x: number; y: number; z: number };
